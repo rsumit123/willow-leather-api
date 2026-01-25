@@ -55,8 +55,8 @@ def create_career(career_data: CareerCreate, db: Session = Depends(get_db)):
     db.add(career)
     db.flush()  # Get career ID
 
-    # Create teams
-    teams = TeamGenerator.create_teams(user_team_index=career_data.team_index)
+    # Create teams for this career
+    teams = TeamGenerator.create_teams(career_id=career.id, user_team_index=career_data.team_index)
     for team in teams:
         db.add(team)
     db.flush()
@@ -149,7 +149,7 @@ def get_career_teams(career_id: int, db: Session = Depends(get_db)):
     if not career:
         raise HTTPException(status_code=404, detail="Career not found")
 
-    teams = db.query(Team).all()
+    teams = db.query(Team).filter_by(career_id=career_id).all()
     return [TeamResponse.model_validate(t) for t in teams]
 
 

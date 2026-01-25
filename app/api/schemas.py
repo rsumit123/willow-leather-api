@@ -86,6 +86,8 @@ class PlayerBrief(BaseModel):
     overall_rating: int
     is_overseas: bool
     base_price: int
+    batting_style: str
+    bowling_type: str
 
     class Config:
         from_attributes = True
@@ -197,6 +199,94 @@ class MatchResultResponse(BaseModel):
     margin: str
     innings1_score: str
     innings2_score: str
+
+
+# Interactive Match Schemas
+class PlayerStateBrief(BaseModel):
+    id: int
+    name: str
+    runs: int = 0
+    balls: int = 0
+    fours: int = 0
+    sixes: int = 0
+    is_out: bool = False
+    is_settled: bool = False
+    is_nervous: bool = False
+    is_on_fire: bool = False
+
+
+class BowlerStateBrief(BaseModel):
+    id: int
+    name: str
+    overs: int = 0
+    balls: int = 0
+    runs: int = 0
+    wickets: int = 0
+    is_tired: bool = False
+    has_confidence: bool = False
+
+
+class MatchStateResponse(BaseModel):
+    innings: int
+    runs: int
+    wickets: int
+    overs: str
+    run_rate: float
+    required_rate: Optional[float] = None
+    target: Optional[int] = None
+
+    striker: Optional[PlayerStateBrief] = None
+    non_striker: Optional[PlayerStateBrief] = None
+    bowler: Optional[BowlerStateBrief] = None
+
+    pitch_type: str
+    is_pressure: bool
+    is_collapse: bool
+    partnership_runs: int
+
+    this_over: list[str]
+    last_ball_commentary: Optional[str] = None
+
+    phase: str
+    balls_remaining: int
+    status: str  # in_progress, completed
+    winner_name: Optional[str] = None
+    margin: Optional[str] = None
+
+    # Team clarity fields
+    batting_team_name: str = ""
+    bowling_team_name: str = ""
+    is_user_batting: bool = False
+    user_team_name: str = ""
+
+    # Innings change indicator
+    innings_just_changed: bool = False
+
+
+class BallRequest(BaseModel):
+    aggression: str  # defend, balanced, attack
+
+
+class TossResultResponse(BaseModel):
+    toss_winner_id: int
+    toss_winner_name: str
+    user_won_toss: bool
+    user_team_name: str
+
+
+class StartMatchRequest(BaseModel):
+    toss_winner_id: int
+    elected_to: str  # "bat" or "bowl"
+
+
+class BallResultResponse(BaseModel):
+    outcome: str
+    runs: int
+    is_wicket: bool
+    is_boundary: bool
+    is_six: bool
+    commentary: str
+    match_state: MatchStateResponse
 
 
 # Standing Schemas

@@ -1,5 +1,5 @@
 from typing import Optional
-from sqlalchemy import String, Integer, Float, ForeignKey, Enum
+from sqlalchemy import String, Integer, Float, ForeignKey, Enum, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
 from app.database import Base
@@ -10,6 +10,14 @@ class PlayerRole(enum.Enum):
     BOWLER = "bowler"
     ALL_ROUNDER = "all_rounder"
     WICKET_KEEPER = "wicket_keeper"
+
+
+class PlayerTrait(enum.Enum):
+    CLUTCH = "clutch"           # +10 skill when runs < 20 or RRR > 10
+    CHOKER = "choker"           # -15 skill in pressure situations
+    BUCKET_HANDS = "bucket_hands"  # +20 catching success
+    PARTNERSHIP_BREAKER = "partnership_breaker"  # +10 bowling after 50+ partnership
+    FINISHER = "finisher"       # +15 batting in last 5 overs
 
 
 class BowlingType(enum.Enum):
@@ -62,6 +70,7 @@ class Player(Base):
 
     # Current state
     form: Mapped[float] = mapped_column(Float, default=1.0)  # 0.7-1.3 multiplier
+    traits: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array
 
     # Team relationship
     team_id: Mapped[Optional[int]] = mapped_column(ForeignKey("teams.id"), nullable=True)

@@ -1,5 +1,6 @@
-from sqlalchemy import String, Integer, BigInteger
+from sqlalchemy import String, Integer, BigInteger, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from typing import Optional
 from app.database import Base
 
 
@@ -7,6 +8,7 @@ class Team(Base):
     __tablename__ = "teams"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    career_id: Mapped[Optional[int]] = mapped_column(ForeignKey("careers.id", ondelete="CASCADE"), nullable=True)
     name: Mapped[str] = mapped_column(String(100))
     short_name: Mapped[str] = mapped_column(String(5))  # e.g., "MI", "CSK"
     city: Mapped[str] = mapped_column(String(50))

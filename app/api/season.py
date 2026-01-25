@@ -64,9 +64,9 @@ def generate_fixtures(career_id: int, db: Session = Depends(get_db)):
     if existing > 0:
         raise HTTPException(status_code=400, detail="Fixtures already generated")
 
-    teams = db.query(Team).all()
+    teams = db.query(Team).filter_by(career_id=career.id).all()
     if len(teams) != 8:
-        raise HTTPException(status_code=400, detail="Need exactly 8 teams")
+        raise HTTPException(status_code=400, detail=f"Need exactly 8 teams, found {len(teams)}")
 
     engine = SeasonEngine(db, season)
 
@@ -371,9 +371,12 @@ def get_playoff_bracket(career_id: int, db: Session = Depends(get_db)):
         winner = db.query(Team).filter_by(id=f.winner_id).first() if f.winner_id else None
 
         bracket[f.fixture_type.value] = {
+            "fixture_id": f.id,
             "match_number": f.match_number,
             "team1": team1.short_name if team1 else None,
+            "team1_id": f.team1_id,
             "team2": team2.short_name if team2 else None,
+            "team2_id": f.team2_id,
             "winner": winner.short_name if winner else None,
             "status": f.status.value,
             "result": f.result_summary,

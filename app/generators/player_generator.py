@@ -1,6 +1,7 @@
 import random
+import json
 from faker import Faker
-from app.models.player import Player, PlayerRole, BowlingType, BattingStyle
+from app.models.player import Player, PlayerRole, BowlingType, BattingStyle, PlayerTrait
 from app.database import get_session
 
 # Initialize Faker instances - use en_US as fallback for unavailable locales
@@ -49,6 +50,31 @@ class PlayerGenerator:
             (BowlingType.OFF_SPIN, 25),
             (BowlingType.LEG_SPIN, 10),
             (BowlingType.LEFT_ARM_SPIN, 10),
+        ],
+    }
+
+    # Trait pools by role
+    TRAIT_POOLS = {
+        PlayerRole.BATSMAN: [
+            PlayerTrait.CLUTCH,
+            PlayerTrait.CHOKER,
+            PlayerTrait.FINISHER
+        ],
+        PlayerRole.BOWLER: [
+            PlayerTrait.CLUTCH,
+            PlayerTrait.CHOKER,
+            PlayerTrait.PARTNERSHIP_BREAKER
+        ],
+        PlayerRole.ALL_ROUNDER: [
+            PlayerTrait.CLUTCH,
+            PlayerTrait.CHOKER,
+            PlayerTrait.FINISHER,
+            PlayerTrait.PARTNERSHIP_BREAKER
+        ],
+        PlayerRole.WICKET_KEEPER: [
+            PlayerTrait.CLUTCH,
+            PlayerTrait.CHOKER,
+            PlayerTrait.BUCKET_HANDS
         ],
     }
 
@@ -159,6 +185,16 @@ class PlayerGenerator:
         else:
             age = random.randint(22, 30)
 
+        # Assign 0-2 traits
+        num_traits = random.choices([0, 1, 2], weights=[40, 40, 20])[0]
+        traits = []
+        if num_traits > 0:
+            pool = cls.TRAIT_POOLS.get(role, [])
+            if pool:
+                traits = random.sample(pool, min(num_traits, len(pool)))
+        
+        traits_json = json.dumps([t.value for t in traits])
+
         # Base price based on tier and role
         base_prices = {
             "star": random.randint(10000000, 20000000),
@@ -190,6 +226,7 @@ class PlayerGenerator:
             temperament=temperament,
             consistency=consistency,
             form=round(random.uniform(0.9, 1.1), 2),
+            traits=traits_json,
             base_price=base_price,
         )
 

@@ -86,11 +86,12 @@ class TeamGenerator:
     """Generates the 8 franchise teams for a career"""
 
     @classmethod
-    def create_teams(cls, user_team_index: int = 0) -> list[Team]:
+    def create_teams(cls, career_id: int, user_team_index: int = 0) -> list[Team]:
         """
-        Create all 8 franchise teams.
+        Create all 8 franchise teams for a career.
 
         Args:
+            career_id: ID of the career these teams belong to
             user_team_index: Index (0-7) of the team the user wants to manage
 
         Returns:
@@ -99,6 +100,7 @@ class TeamGenerator:
         teams = []
         for i, team_data in enumerate(FRANCHISE_TEAMS):
             team = Team(
+                career_id=career_id,
                 name=team_data["name"],
                 short_name=team_data["short_name"],
                 city=team_data["city"],

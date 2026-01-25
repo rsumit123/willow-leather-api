@@ -59,8 +59,8 @@ def start_auction(career_id: int, db: Session = Depends(get_db)):
     if auction.status != AuctionStatus.NOT_STARTED:
         raise HTTPException(status_code=400, detail="Auction already started or completed")
 
-    # Get teams and players
-    teams = db.query(Team).all()
+    # Get teams and players for this career
+    teams = db.query(Team).filter_by(career_id=career_id).all()
     players = db.query(Player).filter_by(team_id=None).all()  # Unsold players
 
     if len(players) == 0:
@@ -96,6 +96,8 @@ def get_auction_state(career_id: int, db: Session = Depends(get_db)):
                 overall_rating=player.overall_rating,
                 is_overseas=player.is_overseas,
                 base_price=player.base_price,
+                batting_style=player.batting_style.value,
+                bowling_type=player.bowling_type.value,
             )
 
     if auction.current_bidder_team_id:
@@ -173,6 +175,8 @@ def next_player(career_id: int, db: Session = Depends(get_db)):
             overall_rating=player.overall_rating,
             is_overseas=player.is_overseas,
             base_price=player.base_price,
+            batting_style=player.batting_style.value,
+            bowling_type=player.bowling_type.value,
         ),
         "starting_bid": player.base_price,
     }
@@ -190,7 +194,7 @@ def place_user_bid(career_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="No player currently being auctioned")
 
     engine = AuctionEngine(db, auction)
-    user_team = db.query(Team).filter_by(is_user_team=True).first()
+    user_team = db.query(Team).filter_by(career_id=career_id, is_user_team=True).first()
 
     if not user_team:
         raise HTTPException(status_code=400, detail="User team not found")
@@ -256,7 +260,7 @@ def simulate_bidding_round(career_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="No player currently being auctioned")
 
     engine = AuctionEngine(db, auction)
-    user_team = db.query(Team).filter_by(is_user_team=True).first()
+    user_team = db.query(Team).filter_by(career_id=career_id, is_user_team=True).first()
     player = db.query(Player).filter_by(id=auction.current_player_id).first()
 
     # Run one bidding round (AI only)
@@ -327,7 +331,7 @@ def auto_complete_auction(career_id: int, db: Session = Depends(get_db)):
 
     if auction.status == AuctionStatus.NOT_STARTED:
         # Start it first
-        teams = db.query(Team).all()
+        teams = db.query(Team).filter_by(career_id=career_id).all()
         players = db.query(Player).filter_by(team_id=None).all()
         engine = AuctionEngine(db, auction)
         engine.initialize_auction(teams, players)
@@ -336,10 +340,29 @@ def auto_complete_auction(career_id: int, db: Session = Depends(get_db)):
         return {"message": "Auction already completed"}
 
     engine = AuctionEngine(db, auction)
-    user_team = db.query(Team).filter_by(is_user_team=True).first()
+    user_team = db.query(Team).filter_by(career_id=career_id, is_user_team=True).first()
 
     results = []
 
+    # First, handle current player if there is one
+    if auction.current_player_id:
+        current_entry = (
+            db.query(AuctionPlayerEntry)
+            .filter_by(auction_id=auction.id, player_id=auction.current_player_id)
+            .first()
+        )
+        if current_entry and current_entry.status == AuctionPlayerStatus.IN_BIDDING:
+            # Finish bidding on current player
+            engine.simulate_full_bidding(current_entry, user_team.id)
+            result = engine.finalize_player(current_entry)
+            results.append({
+                "player": result.player.name,
+                "sold": result.is_sold,
+                "team": result.winning_team.short_name if result.winning_team else None,
+                "price": result.winning_bid,
+            })
+
+    # Then process remaining players
     while not engine.is_auction_complete():
         player_entry = engine.get_next_player()
         if not player_entry:

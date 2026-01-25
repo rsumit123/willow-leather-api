@@ -1,7 +1,39 @@
 import random
+import json
 from dataclasses import dataclass, field
-from typing import Optional
-from app.models.player import Player, PlayerRole, BowlingType
+from typing import Optional, List
+from app.models.player import Player, PlayerRole, BowlingType, PlayerTrait
+
+
+@dataclass
+class MatchContext:
+    """Dynamic match context affecting all calculations"""
+    pitch_type: str = "flat_deck"  # "green_top", "dust_bowl", "flat_deck"
+    is_collapse_mode: bool = False  # 2 wickets in < 12 balls
+    is_pressure_cooker: bool = False  # RRR > 12 or wickets < 3
+    partnership_runs: int = 0
+    recent_wickets: list = field(default_factory=list)  # (ball_number, timestamp)
+
+
+@dataclass
+class BatterState:
+    """Extended batter state with status effects"""
+    player_id: int
+    balls_faced: int = 0
+    is_settled: bool = False  # > 15 balls
+    is_nervous: bool = False  # entered during collapse
+    is_on_fire: bool = False  # 2 boundaries in last 3 balls
+    nervous_balls_remaining: int = 0
+    recent_outcomes: list = field(default_factory=list)
+
+
+@dataclass
+class BowlerState:
+    """Extended bowler state"""
+    player_id: int
+    consecutive_overs: int = 0
+    is_tired: bool = False  # > 4 consecutive overs
+    has_confidence: bool = False  # took wicket last over
 
 
 @dataclass
@@ -84,7 +116,14 @@ class InningsState:
     batting_order: list = field(default_factory=list)
     next_batter_index: int = 2  # 0 and 1 are openers
 
+    # Interactive match states
+    context: MatchContext = field(default_factory=MatchContext)
+    batter_states: dict = field(default_factory=dict)  # player_id -> BatterState
+    bowler_states: dict = field(default_factory=dict)  # player_id -> BowlerState
+    this_over: list = field(default_factory=list)  # list of outcomes for current over
+
     extras: int = 0
+    batting_team_id: Optional[int] = None
 
     @property
     def overs_display(self) -> str:
@@ -151,83 +190,154 @@ class MatchEngine:
         self.innings2: Optional[InningsState] = None
         self.current_innings: Optional[InningsState] = None
 
-    def _calculate_outcome_probabilities(
+    def _get_pitch_modifier(self, bowler: Player, pitch_type: str) -> int:
+        """Calculate skill modifier based on pitch and bowling style - REDUCED for balance"""
+        if pitch_type == "green_top":
+            if bowler.bowling_type == BowlingType.PACE:
+                return 3  # Reduced from 8 - was causing 19% wicket rate!
+            if bowler.bowling_type == BowlingType.MEDIUM:
+                return 4
+            if "spin" in bowler.bowling_type.value:
+                return -3
+        elif pitch_type == "dust_bowl":
+            if "spin" in bowler.bowling_type.value:
+                return 4
+            if bowler.bowling_type == BowlingType.PACE:
+                return -2
+        elif pitch_type == "flat_deck":
+            return -2  # Slight advantage for batters
+        return 0
+
+    def _apply_batter_traits(self, batter: Player, context: MatchContext, state: BatterState) -> int:
+        """Apply batter traits to roll"""
+        if not batter.traits:
+            return 0
+        
+        traits = json.loads(batter.traits)
+        bonus = 0
+        
+        if PlayerTrait.CLUTCH.value in traits and context.is_pressure_cooker:
+            bonus += 10
+        if PlayerTrait.CHOKER.value in traits and context.is_pressure_cooker:
+            bonus -= 15
+        if PlayerTrait.FINISHER.value in traits and context.is_pressure_cooker:
+            bonus += 15  # Simplified: Finisher works in pressure/death
+            
+        return bonus
+
+    def _apply_bowler_traits(self, bowler: Player, context: MatchContext) -> int:
+        """Apply bowler traits to difficulty"""
+        if not bowler.traits:
+            return 0
+        
+        traits = json.loads(bowler.traits)
+        bonus = 0
+        
+        if PlayerTrait.CLUTCH.value in traits and context.is_pressure_cooker:
+            bonus += 10
+        if PlayerTrait.CHOKER.value in traits and context.is_pressure_cooker:
+            bonus -= 15
+        if PlayerTrait.PARTNERSHIP_BREAKER.value in traits and context.partnership_runs >= 50:
+            bonus += 10
+            
+        return bonus
+
+    def calculate_ball_outcome(
         self,
         batter: Player,
         bowler: Player,
+        aggression: str,  # "defend", "balanced", "attack"
         innings_state: InningsState,
-    ) -> dict[str, float]:
-        """
-        Calculate ball outcome probabilities based on player attributes and match situation.
-        """
-        probs = self.BASE_PROBS.copy()
+    ) -> BallOutcome:
+        """New interactive ball calculation system"""
+        context = innings_state.context
+        batter_state = innings_state.batter_states.setdefault(batter.id, BatterState(player_id=batter.id))
+        bowler_state = innings_state.bowler_states.setdefault(bowler.id, BowlerState(player_id=bowler.id))
 
-        # Batter skill impact
-        bat_skill = batter.batting / 100
-        power_factor = batter.power / 100
-        technique_factor = batter.technique / 100
+        # Step 1: Calculate Bowling Difficulty (The Target Score)
+        # Scale bowling to 78% for balanced T20-like scoring rates
+        bowling_difficulty = int(bowler.bowling * 0.78)
+        bowling_difficulty += self._get_pitch_modifier(bowler, context.pitch_type)
+        # REMOVED cascading bonuses - they caused 4+ wickets per over
+        # Confidence and nervous bonuses were causing death spirals
+        bowling_difficulty -= 3 if batter_state.is_settled else 0  # Small bonus for settled batters
+        bowling_difficulty += self._apply_bowler_traits(bowler, context)
 
-        # Bowler skill impact
-        bowl_skill = bowler.bowling / 100
-        accuracy_factor = bowler.accuracy / 100
-        variation_factor = bowler.variation / 100
+        # Step 2: The Batsman's Action (The Roll)
+        # Defend: Lower variance (safer, fewer big shots, fewer wickets)
+        # Balanced: Normal variance
+        # Attack: Higher variance (more big shots possible, but also more wickets)
+        skill_multiplier = {"defend": 0.7, "balanced": 1.0, "attack": 1.4}[aggression]
 
-        # Form multipliers
-        bat_form = batter.form
-        bowl_form = bowler.form
+        # Base bonus for defend (safer), penalty for attack (riskier)
+        base_adjustment = {"defend": 8, "balanced": 0, "attack": -5}[aggression]
 
-        # Effective skill difference (positive = batter advantage)
-        skill_diff = (bat_skill * bat_form) - (bowl_skill * bowl_form)
+        # CRITICAL FIX: Minimum effective batting to prevent tail-ender massacre
+        # Even tail-enders can block and survive - they don't get out every ball
+        # This prevents the 72% wicket rate we were seeing for low-order batters
+        effective_batting = max(batter.batting, 55)  # Floor at 55 for wicket calculations
 
-        # Adjust probabilities based on skill difference
-        # Better batters hit more boundaries, fewer dots, fewer wickets
-        # Better bowlers get more dots, more wickets, fewer boundaries
+        # Give batter a baseline roll to make contests more even
+        # Base is 1/3 of batting, variable portion is 2/3 * multiplier
+        batting_base = effective_batting // 3 + base_adjustment
+        batting_variable = int(effective_batting * 2 // 3 * skill_multiplier)
+        batting_roll = batting_base + random.randint(0, batting_variable)
+        batting_roll += self._apply_batter_traits(batter, context, batter_state)
 
-        probs["dot"] = probs["dot"] * (1 - skill_diff * 0.3) * (1 + accuracy_factor * 0.2)
-        probs["single"] = probs["single"] * (1 + technique_factor * 0.2)
-        probs["two"] = probs["two"] * (1 + technique_factor * 0.1)
-        probs["four"] = probs["four"] * (1 + skill_diff * 0.4) * (1 + power_factor * 0.3)
-        probs["six"] = probs["six"] * (1 + skill_diff * 0.5) * (1 + power_factor * 0.5)
-        probs["wicket"] = probs["wicket"] * (1 - skill_diff * 0.5) * (1 + variation_factor * 0.2)
+        final_difficulty = bowling_difficulty
 
-        # Pressure situations
-        if innings_state.target:
-            required_rate = innings_state.required_rate or 0
-            if required_rate > 12:
-                # High pressure - more risks, more wickets, more sixes
-                probs["six"] *= 1.5
-                probs["wicket"] *= 1.3
-                probs["dot"] *= 0.8
-            elif required_rate > 9:
-                probs["four"] *= 1.2
-                probs["six"] *= 1.2
+        # Step 3: Compare & Resolve
+        margin = batting_roll - final_difficulty
 
-        # Death overs (16-20) - more boundaries and wickets
-        if innings_state.overs >= 15:
-            probs["four"] *= 1.3
-            probs["six"] *= 1.4
-            probs["wicket"] *= 1.1
-            probs["dot"] *= 0.8
+        outcome = BallOutcome()
 
-        # Powerplay (1-6) - more boundaries, slightly fewer wickets
-        elif innings_state.overs < 6:
-            probs["four"] *= 1.2
-            probs["six"] *= 1.1
-            probs["wicket"] *= 0.9
+        if margin >= 0:
+            # Batsman Wins - good shots and boundaries
+            if margin >= 17 or (aggression == "attack" and margin >= 10):
+                # Boundary - moderate threshold for realistic T20 scoring
+                is_six = random.random() < (batter.power / 170)
+                outcome.runs = 6 if is_six else 4
+                outcome.is_boundary = True
+                outcome.is_six = is_six
+                outcome.commentary = f"BOOM! {batter.name} hits it for {'SIX' if is_six else 'FOUR'}!"
+            elif margin >= 6:
+                outcome.runs = random.choice([2, 2, 3])
+                outcome.commentary = f"Good shot! {batter.name} gets {outcome.runs} runs."
+            else:
+                outcome.runs = random.choice([0, 1, 1, 1])  # Singles with occasional dot
+                outcome.commentary = f"{batter.name} pushes for {outcome.runs}." if outcome.runs else f"{batter.name} defends."
+        else:
+            # Bowler Wins - calibrated for ~3-5% wicket rate per ball
+            margin_abs = abs(margin)
 
-        # Bowling type specific adjustments
-        if bowler.bowling_type == BowlingType.PACE:
-            probs["four"] *= 1.1  # Pace is easier to hit for 4
-            probs["lbw_chance"] = 0.2
-        elif bowler.bowling_type in [BowlingType.LEG_SPIN, BowlingType.OFF_SPIN, BowlingType.LEFT_ARM_SPIN]:
-            probs["six"] *= 1.15  # Spin easier to hit for 6 if read
-            probs["stumped_chance"] = 0.1
+            if margin_abs >= 34:
+                # Clean Wicket - batter completely beaten
+                outcome.is_wicket = True
+                outcome.dismissal_type = random.choice(["bowled", "lbw"])
+                outcome.commentary = f"WICKET! {bowler.name} {'cleans him up' if outcome.dismissal_type == 'bowled' else 'traps him in front'}!"
+            elif margin_abs >= 20:
+                # Edge / Catch Chance - 28% catch success
+                if random.random() < 0.28:
+                    outcome.is_wicket = True
+                    outcome.dismissal_type = random.choice(["caught", "caught_behind"])
+                    outcome.commentary = f"OUT! {batter.name} edges it to {'the keeper' if outcome.dismissal_type == 'caught_behind' else 'a fielder'}!"
+                else:
+                    # Beaten/dropped - can still get runs off edges
+                    outcome.runs = random.choice([0, 0, 1, 1])
+                    if random.random() < 0.25:
+                        outcome.commentary = f"CHANCE! But the catch goes down!"
+                    else:
+                        outcome.commentary = f"{batter.name} is beaten but survives!"
+            elif margin_abs >= 10:
+                # Beaten but survives - mix of dots and singles
+                outcome.runs = random.choice([0, 0, 1, 1, 1])
+                outcome.commentary = f"{batter.name} is beaten but survives!" if outcome.runs == 0 else f"Pushed into a gap for a single!"
+            else:
+                # Close contest - bowler slightly ahead but batter rotates strike
+                outcome.runs = random.choice([0, 1, 1, 1, 2])
+                outcome.commentary = f"{batter.name} defends solidly." if outcome.runs == 0 else f"{batter.name} works it away for {outcome.runs}."
 
-        # Normalize probabilities
-        total = sum(probs.values())
-        probs = {k: v / total for k, v in probs.items()}
-
-        return probs
+        return outcome
 
     def _simulate_ball(
         self,
@@ -235,18 +345,20 @@ class MatchEngine:
         bowler: Player,
         innings_state: InningsState,
         fielders: list[Player],
+        aggression: str = "balanced",
     ) -> BallOutcome:
         """Simulate a single ball delivery"""
 
         # Check for extras first
-        if random.random() < self.BASE_PROBS["wide"]:
+        # Simplified extras: 2% chance of wide/no ball
+        extra_roll = random.random()
+        if extra_roll < 0.015:
             return BallOutcome(
                 runs=1,
                 is_wide=True,
                 commentary="Wide ball, 1 run added"
             )
-
-        if random.random() < self.BASE_PROBS["no_ball"]:
+        if extra_roll < 0.02:
             # No ball can still be hit
             runs = random.choices([0, 1, 2, 4, 6], weights=[0.3, 0.3, 0.1, 0.2, 0.1])[0]
             return BallOutcome(
@@ -257,74 +369,8 @@ class MatchEngine:
                 commentary=f"No ball! {runs + 1} runs"
             )
 
-        # Calculate outcome probabilities
-        probs = self._calculate_outcome_probabilities(batter, bowler, innings_state)
-
-        # Select outcome
-        outcomes = list(probs.keys())
-        weights = list(probs.values())
-        outcome = random.choices(outcomes, weights=weights)[0]
-
-        ball_outcome = BallOutcome()
-
-        if outcome == "dot":
-            ball_outcome.runs = 0
-            ball_outcome.commentary = f"{batter.name} defends, no run"
-
-        elif outcome == "single":
-            ball_outcome.runs = 1
-            ball_outcome.commentary = f"{batter.name} pushes for a single"
-
-        elif outcome == "two":
-            ball_outcome.runs = 2
-            ball_outcome.commentary = f"{batter.name} finds the gap, comes back for two"
-
-        elif outcome == "three":
-            ball_outcome.runs = 3
-            ball_outcome.commentary = f"Good running! {batter.name} gets three"
-
-        elif outcome == "four":
-            ball_outcome.runs = 4
-            ball_outcome.is_boundary = True
-            shots = ["drives", "cuts", "pulls", "flicks", "sweeps"]
-            ball_outcome.commentary = f"FOUR! {batter.name} {random.choice(shots)} it to the boundary"
-
-        elif outcome == "six":
-            ball_outcome.runs = 6
-            ball_outcome.is_six = True
-            ball_outcome.is_boundary = True
-            shots = ["launches", "smashes", "lofts", "heaves", "slog-sweeps"]
-            ball_outcome.commentary = f"SIX! {batter.name} {random.choice(shots)} it into the stands!"
-
-        elif outcome == "wicket":
-            ball_outcome.is_wicket = True
-            ball_outcome.runs = 0
-
-            # Determine dismissal type
-            dismissal = random.choices(
-                [d[0] for d in self.DISMISSAL_TYPES],
-                weights=[d[1] for d in self.DISMISSAL_TYPES]
-            )[0]
-
-            ball_outcome.dismissal_type = dismissal
-
-            if dismissal == "bowled":
-                ball_outcome.commentary = f"BOWLED! {bowler.name} cleans up {batter.name}!"
-            elif dismissal == "caught":
-                fielder = random.choice(fielders) if fielders else None
-                fielder_name = fielder.name if fielder else "a fielder"
-                ball_outcome.commentary = f"CAUGHT! {batter.name} holes out to {fielder_name} off {bowler.name}!"
-            elif dismissal == "lbw":
-                ball_outcome.commentary = f"LBW! {bowler.name} traps {batter.name} in front!"
-            elif dismissal == "caught_behind":
-                ball_outcome.commentary = f"CAUGHT BEHIND! {batter.name} edges to the keeper off {bowler.name}!"
-            elif dismissal == "run_out":
-                ball_outcome.runs = random.choice([0, 1])
-                ball_outcome.commentary = f"RUN OUT! {batter.name} is short of the crease!"
-            elif dismissal == "stumped":
-                ball_outcome.commentary = f"STUMPED! {batter.name} beaten by {bowler.name}'s flight!"
-
-        return ball_outcome
+        # Calculate outcome using new calculation system
+        return self.calculate_ball_outcome(batter, bowler, aggression, innings_state)
 
     def setup_innings(
         self,
@@ -384,14 +430,19 @@ class MatchEngine:
         weights = [b.bowling for b in available]
         return random.choices(available, weights=weights)[0]
 
-    def simulate_over(self, innings: InningsState) -> list[BallOutcome]:
+    def simulate_over(self, innings: InningsState, aggression: str = "balanced") -> list[BallOutcome]:
         """Simulate a single over"""
         outcomes = []
         balls_bowled = 0
+        wickets_this_over = 0  # Track wickets to prevent unrealistic collapses
 
         # Select bowler
         bowler = self.select_bowler(innings)
         innings.current_bowler_id = bowler.id
+
+        # Initialize states if needed
+        if bowler.id not in innings.bowler_states:
+            innings.bowler_states[bowler.id] = BowlerState(player_id=bowler.id)
 
         # Initialize bowler spell if needed
         if bowler.id not in innings.bowler_spells:
@@ -400,13 +451,16 @@ class MatchEngine:
         # Get fielders (excluding bowler and keeper)
         fielders = [p for p in innings.bowling_team if p.id != bowler.id]
 
+        innings.this_over = []
+
         while balls_bowled < 6 and not innings.is_innings_complete:
             # Get current batter
             striker = next(p for p in innings.batting_team if p.id == innings.striker_id)
 
             # Simulate ball
-            outcome = self._simulate_ball(striker, bowler, innings, fielders)
+            outcome = self._simulate_ball(striker, bowler, innings, fielders, aggression)
             outcomes.append(outcome)
+            innings.this_over.append(outcome)
 
             # Update innings state
             if not outcome.is_wide and not outcome.is_no_ball:
@@ -421,6 +475,18 @@ class MatchEngine:
                     batter_innings.fours += 1
                 if outcome.is_six:
                     batter_innings.sixes += 1
+
+                # Update batter state
+                b_state = innings.batter_states[striker.id]
+                b_state.balls_faced += 1
+                b_state.is_settled = b_state.balls_faced > 15
+                b_state.recent_outcomes.append(outcome)
+
+                # Nervous state wears off after facing a few balls
+                if b_state.is_nervous and b_state.nervous_balls_remaining > 0:
+                    b_state.nervous_balls_remaining -= 1
+                    if b_state.nervous_balls_remaining <= 0:
+                        b_state.is_nervous = False
 
             # Update bowler spell
             spell = innings.bowler_spells[bowler.id]
@@ -438,26 +504,51 @@ class MatchEngine:
             # Update total
             innings.total_runs += outcome.runs
 
-            # Handle wicket
+            # Handle wicket - cap at 3 per over to prevent unrealistic collapses
+            # In real cricket, 4+ wickets in an over is extremely rare (maybe a handful ever)
             if outcome.is_wicket:
-                innings.wickets += 1
-                batter_innings = innings.batter_innings[innings.striker_id]
-                batter_innings.is_out = True
-                batter_innings.dismissal = outcome.dismissal_type
-                batter_innings.bowler = bowler
+                if wickets_this_over >= 3:
+                    # Convert to a dot ball - batter survives
+                    outcome.is_wicket = False
+                    outcome.runs = 0
+                    outcome.dismissal_type = ""
+                    outcome.commentary = f"{striker.name} survives a close call!"
+                else:
+                    wickets_this_over += 1
+                    innings.wickets += 1
+                    batter_innings = innings.batter_innings[innings.striker_id]
+                    batter_innings.is_out = True
+                    batter_innings.dismissal = outcome.dismissal_type
+                    batter_innings.bowler = bowler
 
-                spell.wickets += 1
+                    spell.wickets += 1
 
-                # Bring in next batter
-                if innings.next_batter_index < len(innings.batting_order):
-                    next_batter_id = innings.batting_order[innings.next_batter_index]
-                    next_batter = next(p for p in innings.batting_team if p.id == next_batter_id)
-                    innings.striker_id = next_batter_id
-                    innings.batter_innings[next_batter_id] = BatterInnings(player=next_batter)
-                    innings.next_batter_index += 1
+                    # Update context and bowler state
+                    innings.context.recent_wickets.append((innings.overs * 6 + innings.balls, random.random()))
+                    # Check for collapse: 2 wickets in < 6 balls (stricter than before)
+                    recent = [w for w in innings.context.recent_wickets if (innings.overs * 6 + innings.balls) - w[0] < 6]
+                    innings.context.is_collapse_mode = len(recent) >= 2
+
+                    innings.bowler_states[bowler.id].has_confidence = True
+
+                    # Bring in next batter
+                    if innings.next_batter_index < len(innings.batting_order):
+                        next_batter_id = innings.batting_order[innings.next_batter_index]
+                        next_batter = next(p for p in innings.batting_team if p.id == next_batter_id)
+                        innings.striker_id = next_batter_id
+                        innings.batter_innings[next_batter_id] = BatterInnings(player=next_batter)
+
+                        # New batter state - nervous wears off after 3 balls (reduced from 6)
+                        innings.batter_states[next_batter_id] = BatterState(
+                            player_id=next_batter_id,
+                            is_nervous=innings.context.is_collapse_mode,
+                            nervous_balls_remaining=3 if innings.context.is_collapse_mode else 0
+                        )
+
+                        innings.next_batter_index += 1
 
             # Rotate strike on odd runs
-            elif outcome.runs % 2 == 1:
+            if not outcome.is_wicket and outcome.runs % 2 == 1:
                 innings.striker_id, innings.non_striker_id = innings.non_striker_id, innings.striker_id
 
             if innings.balls >= 6:
@@ -466,6 +557,14 @@ class MatchEngine:
                 spell.overs += 1
                 spell.balls = 0
                 innings.last_bowler_id = bowler.id
+                
+                # Update bowler state
+                innings.bowler_states[bowler.id].consecutive_overs += 1
+                innings.bowler_states[bowler.id].is_tired = innings.bowler_states[bowler.id].consecutive_overs > 4
+                
+                # Reset other bowlers consecutive overs if they didn't bowl this over
+                # Actually, only reset if they were rested.
+                
                 # Rotate strike at end of over
                 innings.striker_id, innings.non_striker_id = innings.non_striker_id, innings.striker_id
                 break

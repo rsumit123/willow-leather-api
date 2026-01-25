@@ -8,6 +8,7 @@ from app.database import init_db
 from app.api.career import router as career_router
 from app.api.auction import router as auction_router
 from app.api.season import router as season_router
+from app.api.match import router as match_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -19,7 +20,14 @@ app = FastAPI(
 # CORS middleware for mobile/web frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this
+    allow_origins=[
+        "http://localhost:5173", 
+        "http://localhost:5174", 
+        "http://localhost:5175",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,6 +37,7 @@ app.add_middleware(
 app.include_router(career_router, prefix="/api")
 app.include_router(auction_router, prefix="/api")
 app.include_router(season_router, prefix="/api")
+app.include_router(match_router, prefix="/api")
 
 
 @app.on_event("startup")
