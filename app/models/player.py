@@ -1,0 +1,88 @@
+from typing import Optional
+from sqlalchemy import String, Integer, Float, ForeignKey, Enum
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+import enum
+from app.database import Base
+
+
+class PlayerRole(enum.Enum):
+    BATSMAN = "batsman"
+    BOWLER = "bowler"
+    ALL_ROUNDER = "all_rounder"
+    WICKET_KEEPER = "wicket_keeper"
+
+
+class BowlingType(enum.Enum):
+    PACE = "pace"
+    MEDIUM = "medium"
+    OFF_SPIN = "off_spin"
+    LEG_SPIN = "leg_spin"
+    LEFT_ARM_SPIN = "left_arm_spin"
+    NONE = "none"
+
+
+class BattingStyle(enum.Enum):
+    RIGHT_HANDED = "right_handed"
+    LEFT_HANDED = "left_handed"
+
+
+class Player(Base):
+    __tablename__ = "players"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100))
+    age: Mapped[int] = mapped_column(Integer)
+    nationality: Mapped[str] = mapped_column(String(50))
+    is_overseas: Mapped[bool] = mapped_column(default=False)
+
+    # Role and style
+    role: Mapped[PlayerRole] = mapped_column(Enum(PlayerRole))
+    batting_style: Mapped[BattingStyle] = mapped_column(Enum(BattingStyle))
+    bowling_type: Mapped[BowlingType] = mapped_column(Enum(BowlingType))
+
+    # Core attributes (1-100 scale)
+    batting: Mapped[int] = mapped_column(Integer)  # Overall batting ability
+    bowling: Mapped[int] = mapped_column(Integer)  # Overall bowling ability
+    fielding: Mapped[int] = mapped_column(Integer)  # Catching, ground fielding
+    fitness: Mapped[int] = mapped_column(Integer)  # Stamina, injury resistance
+
+    # Batting sub-attributes
+    power: Mapped[int] = mapped_column(Integer)  # Six-hitting ability
+    technique: Mapped[int] = mapped_column(Integer)  # Defense, playing swing/spin
+    running: Mapped[int] = mapped_column(Integer)  # Running between wickets
+
+    # Bowling sub-attributes (relevant if bowler)
+    pace_or_spin: Mapped[int] = mapped_column(Integer)  # Speed for pacers, turn for spinners
+    accuracy: Mapped[int] = mapped_column(Integer)  # Line and length consistency
+    variation: Mapped[int] = mapped_column(Integer)  # Slower balls, googlies etc.
+
+    # Mental attributes
+    temperament: Mapped[int] = mapped_column(Integer)  # Handling pressure
+    consistency: Mapped[int] = mapped_column(Integer)  # Match-to-match reliability
+
+    # Current state
+    form: Mapped[float] = mapped_column(Float, default=1.0)  # 0.7-1.3 multiplier
+
+    # Team relationship
+    team_id: Mapped[Optional[int]] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    team: Mapped["Team"] = relationship("Team", back_populates="players")
+
+    # Auction
+    base_price: Mapped[int] = mapped_column(Integer, default=2000000)  # In INR
+    sold_price: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    @property
+    def overall_rating(self) -> int:
+        """Calculate overall rating based on role"""
+        if self.role == PlayerRole.BATSMAN:
+            return int(self.batting * 0.7 + self.fielding * 0.2 + self.fitness * 0.1)
+        elif self.role == PlayerRole.BOWLER:
+            return int(self.bowling * 0.7 + self.fielding * 0.2 + self.fitness * 0.1)
+        elif self.role == PlayerRole.ALL_ROUNDER:
+            return int(self.batting * 0.4 + self.bowling * 0.4 + self.fielding * 0.1 + self.fitness * 0.1)
+        elif self.role == PlayerRole.WICKET_KEEPER:
+            return int(self.batting * 0.5 + self.fielding * 0.4 + self.fitness * 0.1)
+        return 50
+
+    def __repr__(self):
+        return f"<Player {self.name} ({self.role.value}) - OVR: {self.overall_rating}>"
