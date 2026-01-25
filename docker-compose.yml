@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  willow-api:
+    build: .
+    container_name: willow-leather-api
+    restart: unless-stopped
+    ports:
+      - "8001:8000"  # Use 8001 externally to avoid conflicts
+    environment:
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - DATABASE_PATH=/app/data/willow_leather.db
+    volumes:
+      - willow-data:/app/data  # Persist SQLite database
+    networks:
+      - willow-network
+
+volumes:
+  willow-data:
+
+networks:
+  willow-network:
+    driver: bridge

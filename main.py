@@ -1,6 +1,7 @@
 """
 Willow & Leather - Cricket Management Simulation API
 """
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -17,17 +18,25 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# CORS origins - configurable via environment variable
+default_origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:5175",
+]
+
+# Add custom origins from environment (comma-separated)
+extra_origins = os.environ.get("CORS_ORIGINS", "")
+if extra_origins:
+    default_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
+
 # CORS middleware for mobile/web frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", 
-        "http://localhost:5174", 
-        "http://localhost:5175",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:5175"
-    ],
+    allow_origins=default_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
