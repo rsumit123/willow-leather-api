@@ -16,7 +16,8 @@ from app.models.auction import (
 from app.engine.auction_engine import AuctionEngine
 from app.api.schemas import (
     AuctionStateResponse, TeamAuctionStateResponse, BidResponse,
-    AuctionPlayerResult, PlayerBrief
+    AuctionPlayerResult, PlayerBrief, CategoryPlayersResponse,
+    SkipCategoryResponse, SkipCategoryPlayerResult, SoldPlayerBrief
 )
 
 router = APIRouter(prefix="/auction", tags=["Auction"])
@@ -394,3 +395,158 @@ def auto_complete_auction(career_id: int, db: Session = Depends(get_db)):
         "players_unsold": auction.players_unsold,
         "results": results[:20],  # Return first 20 for brevity
     }
+
+
+@router.get("/{career_id}/remaining-players", response_model=CategoryPlayersResponse)
+def get_remaining_players(career_id: int, db: Session = Depends(get_db)):
+    """Get remaining and sold players grouped by category with counts."""
+    career, season, auction = get_current_auction(career_id, db)
+
+    if auction.status != AuctionStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="Auction not in progress")
+
+    engine = AuctionEngine(db, auction)
+    categories_dict = engine.get_remaining_players_by_category()
+
+    # Convert entries to PlayerBrief
+    categories = {}
+    counts = {}
+
+    for category, entries in categories_dict.items():
+        players = []
+        for entry in entries:
+            player = entry.player
+            players.append(PlayerBrief(
+                id=player.id,
+                name=player.name,
+                role=player.role.value,
+                overall_rating=player.overall_rating,
+                is_overseas=player.is_overseas,
+                base_price=player.base_price,
+                batting_style=player.batting_style.value,
+                bowling_type=player.bowling_type.value,
+            ))
+        categories[category] = players
+        counts[category] = len(players)
+
+    # Get sold players grouped by category
+    sold_entries = (
+        db.query(AuctionPlayerEntry)
+        .filter_by(auction_id=auction.id)
+        .filter(AuctionPlayerEntry.status.in_([AuctionPlayerStatus.SOLD, AuctionPlayerStatus.UNSOLD]))
+        .order_by(AuctionPlayerEntry.auction_order)
+        .all()
+    )
+
+    sold = {}
+    sold_counts = {}
+
+    for entry in sold_entries:
+        cat = entry.category or "unknown"
+        if cat not in sold:
+            sold[cat] = []
+
+        player = entry.player
+        team = db.query(Team).filter_by(id=entry.sold_to_team_id).first() if entry.sold_to_team_id else None
+
+        sold[cat].append(SoldPlayerBrief(
+            id=player.id,
+            name=player.name,
+            role=player.role.value,
+            overall_rating=player.overall_rating,
+            is_overseas=player.is_overseas,
+            base_price=player.base_price,
+            sold_price=entry.sold_price or 0,
+            sold_to_team_name=team.short_name if team else "Unsold",
+        ))
+
+    for cat in sold:
+        sold_counts[cat] = len(sold[cat])
+
+    return CategoryPlayersResponse(
+        current_category=auction.current_category,
+        current_player_id=auction.current_player_id,
+        categories=categories,
+        counts=counts,
+        sold=sold,
+        sold_counts=sold_counts,
+    )
+
+
+@router.post("/{career_id}/skip-category/{category}", response_model=SkipCategoryResponse)
+def skip_category(career_id: int, category: str, db: Session = Depends(get_db)):
+    """Skip a category - AI teams compete for all players in the category."""
+    career, season, auction = get_current_auction(career_id, db)
+
+    if auction.status != AuctionStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="Auction not in progress")
+
+    # Validate category
+    valid_categories = ["marquee", "batsmen", "bowlers", "all_rounders", "wicket_keepers"]
+    if category not in valid_categories:
+        raise HTTPException(status_code=400, detail=f"Invalid category. Must be one of: {valid_categories}")
+
+    engine = AuctionEngine(db, auction)
+
+    # If there's a current player in bidding, finalize them first
+    if auction.current_player_id:
+        current_entry = (
+            db.query(AuctionPlayerEntry)
+            .filter_by(auction_id=auction.id, player_id=auction.current_player_id)
+            .first()
+        )
+        if current_entry and current_entry.status == AuctionPlayerStatus.IN_BIDDING:
+            # Only finalize if it's in the same category
+            if current_entry.category == category:
+                engine.run_competitive_ai_bidding(current_entry)
+                engine.finalize_player(current_entry)
+
+    # Auction all remaining players in the category
+    results = engine.auction_category_ai_only(category)
+
+    # Check if auction is complete
+    if engine.is_auction_complete():
+        engine.complete_auction()
+        career.status = CareerStatus.PRE_SEASON
+        season.phase = SeasonPhase.LEAGUE_STAGE
+        season.auction_completed = True
+        db.commit()
+
+    return SkipCategoryResponse(
+        players_auctioned=len(results),
+        results=[SkipCategoryPlayerResult(**r) for r in results],
+    )
+
+
+@router.post("/{career_id}/quick-pass", response_model=AuctionPlayerResult)
+def quick_pass_player(career_id: int, db: Session = Depends(get_db)):
+    """Quick pass - complete current player's bidding with AI-only competition instantly."""
+    career, season, auction = get_current_auction(career_id, db)
+
+    if auction.status != AuctionStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="Auction not in progress")
+
+    if not auction.current_player_id:
+        raise HTTPException(status_code=400, detail="No player currently being auctioned")
+
+    engine = AuctionEngine(db, auction)
+    player_entry = db.query(AuctionPlayerEntry).filter_by(
+        auction_id=auction.id,
+        player_id=auction.current_player_id
+    ).first()
+
+    if not player_entry:
+        raise HTTPException(status_code=404, detail="Player entry not found")
+
+    # Quick pass with competitive AI bidding
+    result = engine.quick_pass_player(player_entry)
+
+    return AuctionPlayerResult(
+        player_id=result.player.id,
+        player_name=result.player.name,
+        is_sold=result.is_sold,
+        sold_to_team_id=result.winning_team.id if result.winning_team else None,
+        sold_to_team_name=result.winning_team.short_name if result.winning_team else None,
+        sold_price=result.winning_bid,
+        bid_history=result.bid_history,
+    )

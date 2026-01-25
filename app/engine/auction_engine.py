@@ -10,7 +10,7 @@ from app.models.player import Player, PlayerRole
 from app.models.team import Team
 from app.models.auction import (
     Auction, AuctionPlayerEntry, AuctionBid, TeamAuctionState,
-    AuctionStatus, AuctionPlayerStatus
+    AuctionStatus, AuctionPlayerStatus, AuctionCategory
 )
 
 
@@ -61,6 +61,18 @@ class AuctionEngine:
         for state in states:
             self._team_states[state.team_id] = state
 
+    def _get_player_category(self, player: Player) -> str:
+        """Determine player category for auction ordering."""
+        if player.overall_rating >= 80:
+            return AuctionCategory.MARQUEE.value
+        role_map = {
+            PlayerRole.BATSMAN: AuctionCategory.BATSMEN.value,
+            PlayerRole.BOWLER: AuctionCategory.BOWLERS.value,
+            PlayerRole.ALL_ROUNDER: AuctionCategory.ALL_ROUNDERS.value,
+            PlayerRole.WICKET_KEEPER: AuctionCategory.WICKET_KEEPERS.value,
+        }
+        return role_map.get(player.role, AuctionCategory.BATSMEN.value)
+
     def get_team_state(self, team_id: int) -> TeamAuctionState:
         """Get auction state for a team"""
         return self._team_states.get(team_id)
@@ -68,6 +80,7 @@ class AuctionEngine:
     def initialize_auction(self, teams: list[Team], players: list[Player]) -> Auction:
         """
         Set up the auction with all teams and players.
+        Players are categorized and ordered by category, then by base_price/rating within category.
         """
         # Create team auction states
         for team in teams:
@@ -79,24 +92,42 @@ class AuctionEngine:
             self.session.add(state)
             self._team_states[team.id] = state
 
-        # Create player entries with auction order
-        # Order: Stars first (by overall rating desc), then by base price
+        # Define category order
+        category_order = {
+            AuctionCategory.MARQUEE.value: 0,
+            AuctionCategory.BATSMEN.value: 1,
+            AuctionCategory.BOWLERS.value: 2,
+            AuctionCategory.ALL_ROUNDERS.value: 3,
+            AuctionCategory.WICKET_KEEPERS.value: 4,
+        }
+
+        # Assign categories and sort players
+        players_with_categories = [
+            (player, self._get_player_category(player))
+            for player in players
+        ]
+
+        # Sort by category order, then by base_price desc, then rating desc
         sorted_players = sorted(
-            players,
-            key=lambda p: (-p.base_price, -p.overall_rating)
+            players_with_categories,
+            key=lambda x: (category_order.get(x[1], 99), -x[0].base_price, -x[0].overall_rating)
         )
 
-        for order, player in enumerate(sorted_players, 1):
+        for order, (player, category) in enumerate(sorted_players, 1):
             entry = AuctionPlayerEntry(
                 auction_id=self.auction.id,
                 player_id=player.id,
                 auction_order=order,
                 status=AuctionPlayerStatus.AVAILABLE,
+                category=category,
             )
             self.session.add(entry)
 
         self.auction.total_players = len(players)
         self.auction.status = AuctionStatus.IN_PROGRESS
+        # Set initial category
+        if sorted_players:
+            self.auction.current_category = sorted_players[0][1]
         self.session.commit()
 
         return self.auction
@@ -125,6 +156,8 @@ class AuctionEngine:
         self.auction.current_player_id = player_entry.player_id
         self.auction.current_bid = player_entry.player.base_price
         self.auction.current_bidder_team_id = None
+        # Update current category
+        self.auction.current_category = player_entry.category
         self.session.commit()
 
     def _analyze_team_needs(self, team_id: int) -> TeamNeeds:
@@ -479,3 +512,143 @@ class AuctionEngine:
         """Mark auction as complete"""
         self.auction.status = AuctionStatus.COMPLETED
         self.session.commit()
+
+    def _get_available_players_in_category(self, category: str) -> list[AuctionPlayerEntry]:
+        """Get all available players in a specific category."""
+        return (
+            self.session.query(AuctionPlayerEntry)
+            .filter_by(
+                auction_id=self.auction.id,
+                status=AuctionPlayerStatus.AVAILABLE,
+                category=category
+            )
+            .order_by(AuctionPlayerEntry.auction_order)
+            .all()
+        )
+
+    def get_remaining_players_by_category(self) -> dict[str, list[AuctionPlayerEntry]]:
+        """Get all remaining players grouped by category."""
+        entries = (
+            self.session.query(AuctionPlayerEntry)
+            .filter_by(auction_id=self.auction.id, status=AuctionPlayerStatus.AVAILABLE)
+            .order_by(AuctionPlayerEntry.auction_order)
+            .all()
+        )
+
+        categories = {}
+        for entry in entries:
+            cat = entry.category or "unknown"
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(entry)
+
+        return categories
+
+    def run_competitive_ai_bidding(self, player_entry: AuctionPlayerEntry) -> None:
+        """
+        All AI teams compete for a player - no user participation.
+        Maintains economy by ensuring competitive bidding.
+        """
+        player = player_entry.player
+        consecutive_passes = 0
+        max_rounds = 100  # Safety limit
+
+        # Pre-calculate each team's max valuation for this player
+        team_valuations = {
+            team_id: self._calculate_player_value(player, team_id)
+            for team_id in self._team_states.keys()
+        }
+
+        for _ in range(max_rounds):
+            if consecutive_passes >= 2:
+                break
+
+            current_bid = self.auction.current_bid
+            next_bid = self.get_next_bid_amount(current_bid)
+
+            # Find teams willing to bid
+            willing_bidders = []
+            for team_id, max_val in team_valuations.items():
+                # Skip if this team is already the current bidder
+                if team_id == self.auction.current_bidder_team_id:
+                    continue
+
+                state = self._team_states[team_id]
+
+                # Check constraints
+                if state.total_players >= 25:
+                    continue
+                if player.is_overseas and state.overseas_players >= 8:
+                    continue
+                if next_bid > state.max_bid_possible:
+                    continue
+                if next_bid > max_val:
+                    continue
+
+                # Probabilistic bidding based on price/value ratio
+                ratio = next_bid / max_val if max_val > 0 else 1.0
+                # Higher probability when price is low relative to valuation
+                prob = max(0.2, 1.0 - (ratio * 0.7))
+
+                # Increase probability based on team needs
+                needs = self._analyze_team_needs(team_id)
+                if (
+                    (player.role == PlayerRole.BATSMAN and needs.needs_batsmen > 2) or
+                    (player.role == PlayerRole.BOWLER and needs.needs_bowlers > 2) or
+                    (player.role == PlayerRole.ALL_ROUNDER and needs.needs_all_rounders > 1) or
+                    (player.role == PlayerRole.WICKET_KEEPER and needs.needs_wicket_keeper > 0)
+                ):
+                    prob = min(1.0, prob + 0.25)
+
+                if random.random() < prob:
+                    willing_bidders.append(team_id)
+
+            if not willing_bidders:
+                consecutive_passes += 1
+                continue
+
+            # Random bidder from willing teams
+            bidder = random.choice(willing_bidders)
+            if self.place_bid(bidder, player.id, next_bid):
+                consecutive_passes = 0
+            else:
+                consecutive_passes += 1
+
+    def auction_category_ai_only(self, category: str) -> list[dict]:
+        """
+        Auction all remaining players in a category with AI-only bidding.
+        Returns list of results for each player.
+        """
+        entries = self._get_available_players_in_category(category)
+        results = []
+
+        for entry in entries:
+            # Start bidding on this player
+            self.start_bidding(entry)
+
+            # Run competitive AI bidding
+            self.run_competitive_ai_bidding(entry)
+
+            # Finalize the player
+            result = self.finalize_player(entry)
+
+            results.append({
+                "player_id": result.player.id,
+                "player_name": result.player.name,
+                "is_sold": result.is_sold,
+                "sold_to_team_id": result.winning_team.id if result.winning_team else None,
+                "sold_to_team_name": result.winning_team.short_name if result.winning_team else None,
+                "sold_price": result.winning_bid,
+            })
+
+        return results
+
+    def quick_pass_player(self, player_entry: AuctionPlayerEntry) -> BidResult:
+        """
+        Quick pass - complete current player's bidding with AI-only competition instantly.
+        """
+        # Run competitive AI bidding
+        self.run_competitive_ai_bidding(player_entry)
+
+        # Finalize and return result
+        return self.finalize_player(player_entry)

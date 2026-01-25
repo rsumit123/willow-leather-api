@@ -174,6 +174,43 @@ class AuctionPlayerResult(BaseModel):
     bid_history: list[dict]
 
 
+class SkipCategoryPlayerResult(BaseModel):
+    player_id: int
+    player_name: str
+    is_sold: bool
+    sold_to_team_id: Optional[int] = None
+    sold_to_team_name: Optional[str] = None
+    sold_price: int
+
+
+class SkipCategoryResponse(BaseModel):
+    players_auctioned: int
+    results: list[SkipCategoryPlayerResult]
+
+
+class SoldPlayerBrief(BaseModel):
+    id: int
+    name: str
+    role: str
+    overall_rating: int
+    is_overseas: bool
+    base_price: int
+    sold_price: int
+    sold_to_team_name: str
+
+    class Config:
+        from_attributes = True
+
+
+class CategoryPlayersResponse(BaseModel):
+    current_category: Optional[str] = None
+    current_player_id: Optional[int] = None
+    categories: dict[str, list[PlayerBrief]]
+    counts: dict[str, int]
+    sold: dict[str, list[SoldPlayerBrief]]
+    sold_counts: dict[str, int]
+
+
 # Fixture/Match Schemas
 class FixtureResponse(BaseModel):
     id: int

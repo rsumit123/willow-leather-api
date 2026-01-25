@@ -23,6 +23,14 @@ class AuctionPlayerStatus(enum.Enum):
     UNSOLD = "unsold"
 
 
+class AuctionCategory(enum.Enum):
+    MARQUEE = "marquee"           # OVR >= 80
+    BATSMEN = "batsmen"
+    BOWLERS = "bowlers"
+    ALL_ROUNDERS = "all_rounders"
+    WICKET_KEEPERS = "wicket_keepers"
+
+
 class Auction(Base):
     """
     Represents an auction event for a season.
@@ -49,6 +57,9 @@ class Auction(Base):
     players_sold: Mapped[int] = mapped_column(Integer, default=0)
     players_unsold: Mapped[int] = mapped_column(Integer, default=0)
     total_players: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Category tracking
+    current_category: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -78,6 +89,9 @@ class AuctionPlayerEntry(Base):
 
     # Status
     status: Mapped[AuctionPlayerStatus] = mapped_column(Enum(AuctionPlayerStatus), default=AuctionPlayerStatus.AVAILABLE)
+
+    # Category (marquee, batsmen, bowlers, all_rounders, wicket_keepers)
+    category: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     # Result
     sold_to_team_id: Mapped[Optional[int]] = mapped_column(ForeignKey("teams.id"), nullable=True)
