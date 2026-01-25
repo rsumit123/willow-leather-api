@@ -1,0 +1,382 @@
+"""
+Season API endpoints - fixtures, standings, matches, playoffs
+"""
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import List, Optional
+
+from app.database import get_session
+from app.models.career import (
+    Career, Season, Fixture, TeamSeasonStats,
+    CareerStatus, SeasonPhase, FixtureType, FixtureStatus
+)
+from app.models.team import Team
+from app.engine.season_engine import SeasonEngine
+from app.api.schemas import (
+    SeasonResponse, FixtureResponse, StandingResponse, MatchResultResponse
+)
+
+router = APIRouter(prefix="/season", tags=["Season"])
+
+
+def get_db():
+    db = get_session()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_current_season(career_id: int, db: Session) -> tuple[Career, Season]:
+    """Helper to get current season"""
+    career = db.query(Career).filter_by(id=career_id).first()
+    if not career:
+        raise HTTPException(status_code=404, detail="Career not found")
+
+    season = (
+        db.query(Season)
+        .filter_by(career_id=career_id, season_number=career.current_season_number)
+        .first()
+    )
+    if not season:
+        raise HTTPException(status_code=404, detail="Season not found")
+
+    return career, season
+
+
+@router.get("/{career_id}", response_model=SeasonResponse)
+def get_season_info(career_id: int, db: Session = Depends(get_db)):
+    """Get current season info"""
+    career, season = get_current_season(career_id, db)
+    return SeasonResponse.model_validate(season)
+
+
+@router.post("/{career_id}/generate-fixtures")
+def generate_fixtures(career_id: int, db: Session = Depends(get_db)):
+    """Generate league fixtures for the season"""
+    career, season = get_current_season(career_id, db)
+
+    if not season.auction_completed:
+        raise HTTPException(status_code=400, detail="Complete auction first")
+
+    # Check if fixtures already exist
+    existing = db.query(Fixture).filter_by(season_id=season.id).count()
+    if existing > 0:
+        raise HTTPException(status_code=400, detail="Fixtures already generated")
+
+    teams = db.query(Team).all()
+    if len(teams) != 8:
+        raise HTTPException(status_code=400, detail="Need exactly 8 teams")
+
+    engine = SeasonEngine(db, season)
+
+    # Initialize team stats
+    engine.initialize_team_stats(teams)
+
+    # Generate fixtures
+    fixtures = engine.generate_league_fixtures(teams)
+
+    # Update career status
+    career.status = CareerStatus.IN_SEASON
+    season.phase = SeasonPhase.LEAGUE_STAGE
+    db.commit()
+
+    return {
+        "message": "Fixtures generated",
+        "total_matches": len(fixtures),
+    }
+
+
+@router.get("/{career_id}/fixtures", response_model=List[FixtureResponse])
+def get_fixtures(
+    career_id: int,
+    fixture_type: Optional[str] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Get all fixtures for the season"""
+    career, season = get_current_season(career_id, db)
+
+    query = db.query(Fixture).filter_by(season_id=season.id)
+
+    if fixture_type:
+        query = query.filter_by(fixture_type=FixtureType(fixture_type))
+
+    if status:
+        query = query.filter_by(status=FixtureStatus(status))
+
+    fixtures = query.order_by(Fixture.match_number).all()
+
+    result = []
+    for f in fixtures:
+        team1 = db.query(Team).filter_by(id=f.team1_id).first()
+        team2 = db.query(Team).filter_by(id=f.team2_id).first()
+        result.append(FixtureResponse(
+            id=f.id,
+            match_number=f.match_number,
+            fixture_type=f.fixture_type.value,
+            team1_id=f.team1_id,
+            team1_name=team1.short_name if team1 else "?",
+            team2_id=f.team2_id,
+            team2_name=team2.short_name if team2 else "?",
+            venue=f.venue,
+            status=f.status.value,
+            winner_id=f.winner_id,
+            result_summary=f.result_summary,
+        ))
+
+    return result
+
+
+@router.get("/{career_id}/next-fixture", response_model=Optional[FixtureResponse])
+def get_next_fixture(career_id: int, db: Session = Depends(get_db)):
+    """Get the next scheduled fixture"""
+    career, season = get_current_season(career_id, db)
+
+    engine = SeasonEngine(db, season)
+    fixture = engine.get_next_fixture()
+
+    if not fixture:
+        return None
+
+    team1 = db.query(Team).filter_by(id=fixture.team1_id).first()
+    team2 = db.query(Team).filter_by(id=fixture.team2_id).first()
+
+    return FixtureResponse(
+        id=fixture.id,
+        match_number=fixture.match_number,
+        fixture_type=fixture.fixture_type.value,
+        team1_id=fixture.team1_id,
+        team1_name=team1.short_name if team1 else "?",
+        team2_id=fixture.team2_id,
+        team2_name=team2.short_name if team2 else "?",
+        venue=fixture.venue,
+        status=fixture.status.value,
+        winner_id=fixture.winner_id,
+        result_summary=fixture.result_summary,
+    )
+
+
+@router.get("/{career_id}/standings", response_model=List[StandingResponse])
+def get_standings(career_id: int, db: Session = Depends(get_db)):
+    """Get current league standings"""
+    career, season = get_current_season(career_id, db)
+
+    engine = SeasonEngine(db, season)
+    standings = engine.get_league_standings()
+
+    return [
+        StandingResponse(
+            position=s.position,
+            team_id=s.team.id,
+            team_name=s.team.name,
+            team_short_name=s.team.short_name,
+            played=s.played,
+            won=s.won,
+            lost=s.lost,
+            no_result=s.no_result,
+            points=s.points,
+            nrr=s.nrr,
+        )
+        for s in standings
+    ]
+
+
+@router.post("/{career_id}/simulate-match/{fixture_id}", response_model=MatchResultResponse)
+def simulate_match(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+    """Simulate a specific match"""
+    career, season = get_current_season(career_id, db)
+
+    fixture = db.query(Fixture).filter_by(id=fixture_id, season_id=season.id).first()
+    if not fixture:
+        raise HTTPException(status_code=404, detail="Fixture not found")
+
+    if fixture.status != FixtureStatus.SCHEDULED:
+        raise HTTPException(status_code=400, detail="Match already played or in progress")
+
+    engine = SeasonEngine(db, season)
+
+    try:
+        result = engine.simulate_match(fixture)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return MatchResultResponse(
+        fixture_id=fixture.id,
+        winner_id=result.winner.id if result.winner else None,
+        winner_name=result.winner.short_name if result.winner else None,
+        margin=result.margin,
+        innings1_score=result.innings1_score,
+        innings2_score=result.innings2_score,
+    )
+
+
+@router.post("/{career_id}/simulate-next-match", response_model=MatchResultResponse)
+def simulate_next_match(career_id: int, db: Session = Depends(get_db)):
+    """Simulate the next scheduled match"""
+    career, season = get_current_season(career_id, db)
+
+    engine = SeasonEngine(db, season)
+    fixture = engine.get_next_fixture()
+
+    if not fixture:
+        raise HTTPException(status_code=400, detail="No more matches to simulate")
+
+    try:
+        result = engine.simulate_match(fixture)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Check if league stage is complete
+    if fixture.fixture_type == FixtureType.LEAGUE and engine.is_league_complete():
+        season.phase = SeasonPhase.PLAYOFFS
+        career.status = CareerStatus.PLAYOFFS
+        # Generate playoff fixtures
+        engine.generate_playoffs()
+        db.commit()
+
+    return MatchResultResponse(
+        fixture_id=fixture.id,
+        winner_id=result.winner.id if result.winner else None,
+        winner_name=result.winner.short_name if result.winner else None,
+        margin=result.margin,
+        innings1_score=result.innings1_score,
+        innings2_score=result.innings2_score,
+    )
+
+
+@router.post("/{career_id}/simulate-all-league")
+def simulate_all_league_matches(career_id: int, db: Session = Depends(get_db)):
+    """Simulate all remaining league matches"""
+    career, season = get_current_season(career_id, db)
+
+    engine = SeasonEngine(db, season)
+    results = []
+
+    while True:
+        fixture = engine.get_next_fixture()
+        if not fixture or fixture.fixture_type != FixtureType.LEAGUE:
+            break
+
+        try:
+            result = engine.simulate_match(fixture)
+            results.append({
+                "match_number": fixture.match_number,
+                "teams": f"{result.innings1_score.split(':')[0]} vs {result.innings2_score.split(':')[0]}",
+                "winner": result.winner.short_name if result.winner else "Tie",
+                "margin": result.margin,
+            })
+        except ValueError as e:
+            results.append({
+                "match_number": fixture.match_number,
+                "error": str(e),
+            })
+            break
+
+    # Update to playoffs
+    if engine.is_league_complete():
+        season.phase = SeasonPhase.PLAYOFFS
+        career.status = CareerStatus.PLAYOFFS
+        engine.generate_playoffs()
+        db.commit()
+
+    return {
+        "matches_simulated": len(results),
+        "results": results,
+        "league_complete": engine.is_league_complete(),
+    }
+
+
+@router.post("/{career_id}/playoffs/generate-next")
+def generate_next_playoff_fixture(career_id: int, db: Session = Depends(get_db)):
+    """Generate the next playoff fixture based on results"""
+    career, season = get_current_season(career_id, db)
+
+    if season.phase != SeasonPhase.PLAYOFFS:
+        raise HTTPException(status_code=400, detail="Not in playoffs phase")
+
+    engine = SeasonEngine(db, season)
+
+    # Check current state
+    q1 = db.query(Fixture).filter_by(
+        season_id=season.id, fixture_type=FixtureType.QUALIFIER_1
+    ).first()
+    elim = db.query(Fixture).filter_by(
+        season_id=season.id, fixture_type=FixtureType.ELIMINATOR
+    ).first()
+    q2 = db.query(Fixture).filter_by(
+        season_id=season.id, fixture_type=FixtureType.QUALIFIER_2
+    ).first()
+    final = db.query(Fixture).filter_by(
+        season_id=season.id, fixture_type=FixtureType.FINAL
+    ).first()
+
+    # Need Q2?
+    if (q1 and q1.status == FixtureStatus.COMPLETED and
+        elim and elim.status == FixtureStatus.COMPLETED and
+        not q2):
+        # Get Q1 loser and Eliminator winner
+        q1_loser_id = q1.team2_id if q1.winner_id == q1.team1_id else q1.team1_id
+        q1_loser = db.query(Team).filter_by(id=q1_loser_id).first()
+        elim_winner = db.query(Team).filter_by(id=elim.winner_id).first()
+
+        if q1_loser and elim_winner:
+            q2_fixture = engine.generate_qualifier2(q1_loser, elim_winner)
+            return {"message": "Qualifier 2 generated", "fixture_id": q2_fixture.id}
+
+    # Need Final?
+    if (q1 and q1.status == FixtureStatus.COMPLETED and
+        q2 and q2.status == FixtureStatus.COMPLETED and
+        not final):
+        q1_winner = db.query(Team).filter_by(id=q1.winner_id).first()
+        q2_winner = db.query(Team).filter_by(id=q2.winner_id).first()
+
+        if q1_winner and q2_winner:
+            final_fixture = engine.generate_final(q1_winner, q2_winner)
+            return {"message": "Final generated", "fixture_id": final_fixture.id}
+
+    # Check if season complete
+    if final and final.status == FixtureStatus.COMPLETED:
+        champion = db.query(Team).filter_by(id=final.winner_id).first()
+        runner_up_id = final.team2_id if final.winner_id == final.team1_id else final.team1_id
+        runner_up = db.query(Team).filter_by(id=runner_up_id).first()
+
+        engine.complete_season(champion, runner_up)
+        career.status = CareerStatus.POST_SEASON
+        db.commit()
+
+        return {
+            "message": "Season complete",
+            "champion": champion.name,
+            "runner_up": runner_up.name,
+        }
+
+    return {"message": "No new fixture needed yet"}
+
+
+@router.get("/{career_id}/playoffs/bracket")
+def get_playoff_bracket(career_id: int, db: Session = Depends(get_db)):
+    """Get playoff bracket status"""
+    career, season = get_current_season(career_id, db)
+
+    fixtures = db.query(Fixture).filter(
+        Fixture.season_id == season.id,
+        Fixture.fixture_type != FixtureType.LEAGUE
+    ).all()
+
+    bracket = {}
+    for f in fixtures:
+        team1 = db.query(Team).filter_by(id=f.team1_id).first()
+        team2 = db.query(Team).filter_by(id=f.team2_id).first()
+        winner = db.query(Team).filter_by(id=f.winner_id).first() if f.winner_id else None
+
+        bracket[f.fixture_type.value] = {
+            "match_number": f.match_number,
+            "team1": team1.short_name if team1 else None,
+            "team2": team2.short_name if team2 else None,
+            "winner": winner.short_name if winner else None,
+            "status": f.status.value,
+            "result": f.result_summary,
+        }
+
+    return bracket
