@@ -336,6 +336,7 @@ class AvailableBowlerResponse(BaseModel):
     id: int
     name: str
     bowling_type: str  # "pace", "medium", "off_spin", "leg_spin", "left_arm_spin"
+    bowling_skill: int  # 1-100 bowling attribute
     overs_bowled: str  # "2.3" format (overs.balls)
     wickets: int
     runs_conceded: int

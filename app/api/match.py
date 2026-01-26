@@ -945,6 +945,7 @@ def get_available_bowlers(career_id: int, fixture_id: int, db: Session = Depends
             id=b.id,
             name=b.name,
             bowling_type=b.bowling_type.value,
+            bowling_skill=b.bowling,
             overs_bowled=overs_display,
             wickets=wickets,
             runs_conceded=runs_conceded,
