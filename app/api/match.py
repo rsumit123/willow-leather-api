@@ -17,7 +17,9 @@ from app.engine.season_engine import SeasonEngine
 from app.api.schemas import (
     MatchStateResponse, BallRequest, BallResultResponse,
     PlayerStateBrief, BowlerStateBrief, TossResultResponse, StartMatchRequest,
-    AvailableBowlerResponse, AvailableBowlersResponse, SelectBowlerRequest
+    AvailableBowlerResponse, AvailableBowlersResponse, SelectBowlerRequest,
+    BatterScorecardEntry, BowlerScorecardEntry, ExtrasBreakdown,
+    InningsScorecard, ManOfTheMatch, LiveScorecardResponse, MatchCompletionResponse
 )
 
 # Store toss results for pending matches
@@ -28,6 +30,19 @@ router = APIRouter(prefix="/match", tags=["Interactive Match"])
 # In-memory store for active matches
 # In production, this should be in Redis or DB
 active_matches: Dict[int, MatchEngine] = {}
+
+# Store completed match results temporarily so they can be fetched after match ends
+# Key: fixture_id, Value: dict with engine copy and winner info
+completed_match_results: Dict[int, dict] = {}
+
+
+def _store_completed_match(fixture_id: int, engine: MatchEngine, winner_id: Optional[int], margin: str):
+    """Store completed match data so it can be fetched after removal from active_matches"""
+    completed_match_results[fixture_id] = {
+        "engine": engine,
+        "winner_id": winner_id,
+        "margin": margin
+    }
 
 def get_db():
     db = get_session()
@@ -218,6 +233,211 @@ def _get_outcome_string(outcome: BallOutcome) -> str:
     if outcome.is_wide: return "Wd"
     if outcome.is_no_ball: return "Nb"
     return str(outcome.runs)
+
+
+def _format_dismissal(batter_innings: BatterInnings) -> str:
+    """Convert dismissal info to readable string"""
+    if not batter_innings.is_out:
+        return "not out"
+
+    dismissal = batter_innings.dismissal
+    bowler = batter_innings.bowler
+    fielder = batter_innings.fielder
+
+    bowler_name = bowler.name if bowler else "Unknown"
+
+    if dismissal == "bowled":
+        return f"b {bowler_name}"
+    elif dismissal == "lbw":
+        return f"lbw b {bowler_name}"
+    elif dismissal == "caught":
+        if fielder:
+            return f"c {fielder.name} b {bowler_name}"
+        return f"c & b {bowler_name}"
+    elif dismissal == "caught_behind":
+        return f"c †wk b {bowler_name}"
+    elif dismissal == "run_out":
+        if fielder:
+            return f"run out ({fielder.name})"
+        return "run out"
+    elif dismissal == "stumped":
+        return f"st †wk b {bowler_name}"
+    else:
+        return f"b {bowler_name}"
+
+
+def _build_innings_scorecard(innings: InningsState, batting_team: Team, bowling_team: Team) -> InningsScorecard:
+    """Convert InningsState to response schema"""
+    # Build batter entries - sorted by batting order position
+    batters = []
+    batted_ids = set()
+
+    for position, player_id in enumerate(innings.batting_order):
+        if player_id in innings.batter_innings:
+            bi = innings.batter_innings[player_id]
+            batted_ids.add(player_id)
+            batters.append(BatterScorecardEntry(
+                player_id=player_id,
+                player_name=bi.player.name,
+                runs=bi.runs,
+                balls=bi.balls,
+                fours=bi.fours,
+                sixes=bi.sixes,
+                strike_rate=round(bi.strike_rate, 2),
+                is_out=bi.is_out,
+                dismissal=_format_dismissal(bi),
+                batting_position=position + 1
+            ))
+
+    # Calculate extras from bowler spells
+    total_wides = 0
+    total_no_balls = 0
+    for spell in innings.bowler_spells.values():
+        total_wides += spell.wides
+        total_no_balls += spell.no_balls
+
+    extras = ExtrasBreakdown(
+        wides=total_wides,
+        no_balls=total_no_balls,
+        total=total_wides + total_no_balls
+    )
+
+    # Build bowler entries - sorted by overs bowled (most first)
+    bowlers = []
+    for player_id, spell in sorted(
+        innings.bowler_spells.items(),
+        key=lambda x: (x[1].overs * 6 + x[1].balls),
+        reverse=True
+    ):
+        bowlers.append(BowlerScorecardEntry(
+            player_id=player_id,
+            player_name=spell.player.name,
+            overs=spell.overs_display,
+            runs=spell.runs,
+            wickets=spell.wickets,
+            economy=round(spell.economy, 2),
+            wides=spell.wides,
+            no_balls=spell.no_balls
+        ))
+
+    # Did not bat list
+    did_not_bat = []
+    for player_id in innings.batting_order:
+        if player_id not in batted_ids:
+            player = next((p for p in innings.batting_team if p.id == player_id), None)
+            if player:
+                did_not_bat.append(player.name)
+
+    return InningsScorecard(
+        batting_team_name=batting_team.short_name,
+        bowling_team_name=bowling_team.short_name,
+        total_runs=innings.total_runs,
+        wickets=innings.wickets,
+        overs=innings.overs_display,
+        run_rate=round(innings.run_rate, 2),
+        extras=extras,
+        batters=batters,
+        bowlers=bowlers,
+        did_not_bat=did_not_bat
+    )
+
+
+def _calculate_man_of_the_match(engine: MatchEngine, winner_id: int, db: Session) -> ManOfTheMatch:
+    """Calculate man of the match from winning team"""
+    # Collect all performances from winning team across both innings
+    player_impacts = {}  # player_id -> {batting_impact, bowling_impact, name, team_name, bat_summary, bowl_summary}
+
+    winner_team = db.query(Team).get(winner_id)
+
+    # Process both innings
+    for innings in [engine.innings1, engine.innings2]:
+        if not innings:
+            continue
+
+        is_winner_batting = innings.batting_team_id == winner_id
+
+        if is_winner_batting:
+            # Count batting contributions from winning team
+            for player_id, bi in innings.batter_innings.items():
+                if player_id not in player_impacts:
+                    player_impacts[player_id] = {
+                        'batting_impact': 0,
+                        'bowling_impact': 0,
+                        'name': bi.player.name,
+                        'team_name': winner_team.short_name,
+                        'bat_runs': 0,
+                        'bat_balls': 0,
+                        'bowl_wickets': 0,
+                        'bowl_runs': 0
+                    }
+
+                # Batting Impact = runs × (1 + (strike_rate - 100) / 200)
+                sr = bi.strike_rate if bi.balls > 0 else 100
+                batting_impact = bi.runs * (1 + (sr - 100) / 200)
+                player_impacts[player_id]['batting_impact'] += batting_impact
+                player_impacts[player_id]['bat_runs'] += bi.runs
+                player_impacts[player_id]['bat_balls'] += bi.balls
+        else:
+            # Count bowling contributions from winning team (they are bowling)
+            for player_id, spell in innings.bowler_spells.items():
+                if player_id not in player_impacts:
+                    player = spell.player
+                    player_impacts[player_id] = {
+                        'batting_impact': 0,
+                        'bowling_impact': 0,
+                        'name': player.name,
+                        'team_name': winner_team.short_name,
+                        'bat_runs': 0,
+                        'bat_balls': 0,
+                        'bowl_wickets': 0,
+                        'bowl_runs': 0
+                    }
+
+                # Bowling Impact = wickets × 25 × (1 + (6.0 - economy) / 6)
+                economy = spell.economy if (spell.overs * 6 + spell.balls) > 0 else 6.0
+                bowling_impact = spell.wickets * 25 * (1 + (6.0 - economy) / 6)
+                player_impacts[player_id]['bowling_impact'] += bowling_impact
+                player_impacts[player_id]['bowl_wickets'] += spell.wickets
+                player_impacts[player_id]['bowl_runs'] += spell.runs
+
+    # Find player with highest total impact
+    best_player_id = None
+    best_impact = -1
+
+    for player_id, data in player_impacts.items():
+        total_impact = data['batting_impact'] + data['bowling_impact']
+        if total_impact > best_impact:
+            best_impact = total_impact
+            best_player_id = player_id
+
+    if best_player_id is None:
+        # Fallback - shouldn't happen
+        return ManOfTheMatch(
+            player_id=0,
+            player_name="Unknown",
+            team_name=winner_team.short_name,
+            performance_summary="N/A",
+            impact_score=0
+        )
+
+    data = player_impacts[best_player_id]
+
+    # Build performance summary
+    parts = []
+    if data['bat_runs'] > 0 or data['bat_balls'] > 0:
+        parts.append(f"{data['bat_runs']}({data['bat_balls']})")
+    if data['bowl_wickets'] > 0:
+        parts.append(f"{data['bowl_wickets']}/{data['bowl_runs']}")
+
+    performance_summary = " & ".join(parts) if parts else "N/A"
+
+    return ManOfTheMatch(
+        player_id=best_player_id,
+        player_name=data['name'],
+        team_name=data['team_name'],
+        performance_summary=performance_summary,
+        impact_score=round(best_impact, 1)
+    )
 
 
 @router.post("/{career_id}/match/{fixture_id}/toss")
@@ -430,7 +650,7 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
     if bowler.id not in innings.bowler_spells:
         innings.bowler_spells[bowler.id] = BowlerSpell(player=bowler)
     spell = innings.bowler_spells[bowler.id]
-    
+
     if outcome.is_wide:
         spell.wides += 1
         spell.runs += 1
@@ -441,6 +661,7 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
         innings.extras += 1
     else:
         spell.runs += outcome.runs
+        spell.balls += 1  # Track balls bowled (legal deliveries only)
 
     innings.total_runs += outcome.runs
 
@@ -488,7 +709,8 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
     if innings.is_innings_complete:
         if innings == engine.innings2:
             # Match complete! Save to DB
-            _finalize_match_interactive(engine, fixture, db)
+            winner_id, margin = _finalize_match_interactive(engine, fixture, db)
+            _store_completed_match(fixture_id, engine, winner_id, margin)
             del active_matches[fixture_id]
 
     return BallResultResponse(
@@ -501,14 +723,20 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
         match_state=_get_match_state_response(engine, fixture, db, innings_just_changed=innings_just_changed)
     )
 
-def _finalize_match_interactive(engine: MatchEngine, fixture: Fixture, db: Session):
+def _finalize_match_interactive(engine: MatchEngine, fixture: Fixture, db: Session) -> tuple:
+    """Finalize match and return (winner_id, margin) tuple"""
     # Determine winner
     target = engine.innings1.total_runs + 1
     winner = None
+    margin = ""
     if engine.innings2.total_runs >= target:
         winner = db.query(Team).get(engine.innings2.batting_team_id)
+        margin = f"{10 - engine.innings2.wickets} wickets"
     elif engine.innings2.total_runs < target - 1:
         winner = db.query(Team).get(engine.innings1.batting_team_id)
+        margin = f"{(target - 1) - engine.innings2.total_runs} runs"
+    else:
+        margin = "Match tied!"
 
     # Create match record
     match = Match(
@@ -583,6 +811,7 @@ def _finalize_match_interactive(engine: MatchEngine, fixture: Fixture, db: Sessi
             career.status = CareerStatus.POST_SEASON
 
     db.commit()
+    return (winner.id if winner else None, margin)
 
 @router.post("/{career_id}/match/{fixture_id}/simulate-over")
 def simulate_over_interactive(career_id: int, fixture_id: int, request: Optional[BallRequest] = None, db: Session = Depends(get_db)):
@@ -623,7 +852,8 @@ def simulate_over_interactive(career_id: int, fixture_id: int, request: Optional
         engine.innings2.current_bowler_id = bowler.id
         innings_just_changed = True
     elif innings.is_innings_complete and innings == engine.innings2:
-        _finalize_match_interactive(engine, fixture, db)
+        winner_id, margin = _finalize_match_interactive(engine, fixture, db)
+        _store_completed_match(fixture_id, engine, winner_id, margin)
         del active_matches[fixture_id]
 
     return _get_match_state_response(engine, fixture, db, innings_just_changed=innings_just_changed)
@@ -666,7 +896,8 @@ def simulate_innings_interactive(career_id: int, fixture_id: int, db: Session = 
         engine.innings2.current_bowler_id = bowler.id
         innings_just_changed = True
     elif innings.is_innings_complete and innings == engine.innings2:
-        _finalize_match_interactive(engine, fixture, db)
+        winner_id, margin = _finalize_match_interactive(engine, fixture, db)
+        _store_completed_match(fixture_id, engine, winner_id, margin)
         del active_matches[fixture_id]
 
     return _get_match_state_response(engine, fixture, db, innings_just_changed=innings_just_changed)
@@ -691,7 +922,9 @@ def get_available_bowlers(career_id: int, fixture_id: int, db: Session = Depends
     available_bowlers = []
     for b in bowlers:
         spell = innings.bowler_spells.get(b.id)
-        overs_bowled = spell.overs if spell else 0
+        overs_int = spell.overs if spell else 0
+        balls_int = spell.balls if spell else 0
+        overs_display = spell.overs_display if spell else "0.0"
         wickets = spell.wickets if spell else 0
         runs_conceded = spell.runs if spell else 0
         economy = spell.economy if spell else 0.0
@@ -699,8 +932,8 @@ def get_available_bowlers(career_id: int, fixture_id: int, db: Session = Depends
         can_bowl = True
         reason = None
 
-        # Check if bowled max overs
-        if overs_bowled >= 4:
+        # Check if bowled max overs (4 complete overs)
+        if overs_int >= 4:
             can_bowl = False
             reason = "Bowled maximum 4 overs"
         # Check if was last bowler
@@ -711,7 +944,8 @@ def get_available_bowlers(career_id: int, fixture_id: int, db: Session = Depends
         available_bowlers.append(AvailableBowlerResponse(
             id=b.id,
             name=b.name,
-            overs_bowled=overs_bowled,
+            bowling_type=b.bowling_type.value,
+            overs_bowled=overs_display,
             wickets=wickets,
             runs_conceded=runs_conceded,
             economy=round(economy, 2),
@@ -771,3 +1005,147 @@ def select_bowler_manual(career_id: int, fixture_id: int, request: SelectBowlerR
         innings.bowler_states[bowler.id] = BowlerState(player_id=bowler.id)
 
     return _get_match_state_response(engine, fixture, db)
+
+
+@router.get("/{career_id}/match/{fixture_id}/scorecard")
+def get_live_scorecard(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+    """Get live scorecard during an active match"""
+    if fixture_id not in active_matches:
+        raise HTTPException(status_code=404, detail="Active match session not found")
+
+    engine = active_matches[fixture_id]
+    _refresh_engine_players(engine, db)
+    fixture = db.query(Fixture).get(fixture_id)
+
+    innings1_scorecard = None
+    innings2_scorecard = None
+    current_innings = 1
+
+    if engine.innings1:
+        # Get batting team for innings 1
+        batting_team_id = engine.innings1.batting_team_id
+        batting_team = db.query(Team).get(batting_team_id)
+        bowling_team_id = fixture.team2_id if batting_team_id == fixture.team1_id else fixture.team1_id
+        bowling_team = db.query(Team).get(bowling_team_id)
+        innings1_scorecard = _build_innings_scorecard(engine.innings1, batting_team, bowling_team)
+
+    if engine.innings2:
+        # Get batting team for innings 2
+        batting_team_id = engine.innings2.batting_team_id
+        batting_team = db.query(Team).get(batting_team_id)
+        bowling_team_id = fixture.team2_id if batting_team_id == fixture.team1_id else fixture.team1_id
+        bowling_team = db.query(Team).get(bowling_team_id)
+        innings2_scorecard = _build_innings_scorecard(engine.innings2, batting_team, bowling_team)
+        current_innings = 2
+
+    return LiveScorecardResponse(
+        innings1=innings1_scorecard,
+        innings2=innings2_scorecard,
+        current_innings=current_innings
+    )
+
+
+@router.get("/{career_id}/match/{fixture_id}/result")
+def get_match_result(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+    """Get complete match result with scorecard and Man of the Match after match ends"""
+    # First check if match is still active (just completed)
+    if fixture_id in active_matches:
+        engine = active_matches[fixture_id]
+        _refresh_engine_players(engine, db)
+
+        # Verify match is complete
+        if not engine.innings2 or not engine.innings2.is_innings_complete:
+            raise HTTPException(status_code=400, detail="Match not yet complete")
+
+        fixture = db.query(Fixture).get(fixture_id)
+
+        # Determine winner
+        target = engine.innings1.total_runs + 1
+        if engine.innings2.total_runs >= target:
+            winner_id = engine.innings2.batting_team_id
+            winner = db.query(Team).get(winner_id)
+            margin = f"{10 - engine.innings2.wickets} wickets"
+        elif engine.innings2.total_runs < target - 1:
+            winner_id = engine.innings1.batting_team_id
+            winner = db.query(Team).get(winner_id)
+            margin = f"{(target - 1) - engine.innings2.total_runs} runs"
+        else:
+            # Tie
+            winner_id = engine.innings1.batting_team_id  # Arbitrary for MoM
+            winner = db.query(Team).get(winner_id)
+            margin = "Match tied!"
+
+        # Build scorecards for both innings
+        batting_team_1 = db.query(Team).get(engine.innings1.batting_team_id)
+        bowling_team_1_id = fixture.team2_id if engine.innings1.batting_team_id == fixture.team1_id else fixture.team1_id
+        bowling_team_1 = db.query(Team).get(bowling_team_1_id)
+        innings1_scorecard = _build_innings_scorecard(engine.innings1, batting_team_1, bowling_team_1)
+
+        batting_team_2 = db.query(Team).get(engine.innings2.batting_team_id)
+        bowling_team_2_id = fixture.team2_id if engine.innings2.batting_team_id == fixture.team1_id else fixture.team1_id
+        bowling_team_2 = db.query(Team).get(bowling_team_2_id)
+        innings2_scorecard = _build_innings_scorecard(engine.innings2, batting_team_2, bowling_team_2)
+
+        # Calculate Man of the Match
+        mom = _calculate_man_of_the_match(engine, winner_id, db)
+
+        return MatchCompletionResponse(
+            winner_name=winner.short_name,
+            margin=margin,
+            innings1=innings1_scorecard,
+            innings2=innings2_scorecard,
+            man_of_the_match=mom
+        )
+
+    # Check if match was recently completed and stored
+    if fixture_id in completed_match_results:
+        stored = completed_match_results[fixture_id]
+        engine = stored["engine"]
+        winner_id = stored["winner_id"]
+        margin = stored["margin"]
+
+        # Re-bind player objects to the current database session
+        _refresh_engine_players(engine, db)
+
+        fixture = db.query(Fixture).get(fixture_id)
+        winner = db.query(Team).get(winner_id) if winner_id else None
+
+        # Build scorecards for both innings
+        batting_team_1 = db.query(Team).get(engine.innings1.batting_team_id)
+        bowling_team_1_id = fixture.team2_id if engine.innings1.batting_team_id == fixture.team1_id else fixture.team1_id
+        bowling_team_1 = db.query(Team).get(bowling_team_1_id)
+        innings1_scorecard = _build_innings_scorecard(engine.innings1, batting_team_1, bowling_team_1)
+
+        batting_team_2 = db.query(Team).get(engine.innings2.batting_team_id)
+        bowling_team_2_id = fixture.team2_id if engine.innings2.batting_team_id == fixture.team1_id else fixture.team1_id
+        bowling_team_2 = db.query(Team).get(bowling_team_2_id)
+        innings2_scorecard = _build_innings_scorecard(engine.innings2, batting_team_2, bowling_team_2)
+
+        # Calculate Man of the Match
+        mom = _calculate_man_of_the_match(engine, winner_id if winner_id else engine.innings1.batting_team_id, db)
+
+        # Clean up stored result after fetching
+        del completed_match_results[fixture_id]
+
+        return MatchCompletionResponse(
+            winner_name=winner.short_name if winner else "Tie",
+            margin=margin,
+            innings1=innings1_scorecard,
+            innings2=innings2_scorecard,
+            man_of_the_match=mom
+        )
+
+    # Match not in memory - check if it was completed and saved
+    fixture = db.query(Fixture).get(fixture_id)
+    if not fixture:
+        raise HTTPException(status_code=404, detail="Fixture not found")
+
+    if fixture.status != FixtureStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Match not found or not complete")
+
+    # For completed matches that are no longer in memory, we don't have detailed stats
+    # This is a limitation - in production you'd want to persist the full scorecard
+    raise HTTPException(
+        status_code=404,
+        detail="Match scorecard no longer available. Detailed scorecards are only available immediately after match completion."
+    )

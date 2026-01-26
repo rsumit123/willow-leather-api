@@ -335,7 +335,8 @@ class MatchStateResponse(BaseModel):
 class AvailableBowlerResponse(BaseModel):
     id: int
     name: str
-    overs_bowled: int
+    bowling_type: str  # "pace", "medium", "off_spin", "leg_spin", "left_arm_spin"
+    overs_bowled: str  # "2.3" format (overs.balls)
     wickets: int
     runs_conceded: int
     economy: float
@@ -419,3 +420,69 @@ class PlayingXIValidationResponse(BaseModel):
     valid: bool
     errors: list[str]
     breakdown: dict
+
+
+# Scorecard Schemas
+class BatterScorecardEntry(BaseModel):
+    player_id: int
+    player_name: str
+    runs: int
+    balls: int
+    fours: int
+    sixes: int
+    strike_rate: float
+    is_out: bool
+    dismissal: str  # "c Fielder b Bowler", "not out", "b Bowler"
+    batting_position: int
+
+
+class BowlerScorecardEntry(BaseModel):
+    player_id: int
+    player_name: str
+    overs: str  # "4.0", "3.2"
+    runs: int
+    wickets: int
+    economy: float
+    wides: int
+    no_balls: int
+
+
+class ExtrasBreakdown(BaseModel):
+    wides: int
+    no_balls: int
+    total: int
+
+
+class InningsScorecard(BaseModel):
+    batting_team_name: str
+    bowling_team_name: str
+    total_runs: int
+    wickets: int
+    overs: str
+    run_rate: float
+    extras: ExtrasBreakdown
+    batters: list[BatterScorecardEntry]
+    bowlers: list[BowlerScorecardEntry]
+    did_not_bat: list[str]
+
+
+class ManOfTheMatch(BaseModel):
+    player_id: int
+    player_name: str
+    team_name: str
+    performance_summary: str  # "87(52)" or "4/18" or "45(30) & 2/24"
+    impact_score: float
+
+
+class LiveScorecardResponse(BaseModel):
+    innings1: Optional[InningsScorecard] = None
+    innings2: Optional[InningsScorecard] = None
+    current_innings: int
+
+
+class MatchCompletionResponse(BaseModel):
+    winner_name: str
+    margin: str
+    innings1: InningsScorecard
+    innings2: InningsScorecard
+    man_of_the_match: ManOfTheMatch
