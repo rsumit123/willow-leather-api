@@ -916,8 +916,8 @@ def get_available_bowlers(career_id: int, fixture_id: int, db: Session = Depends
     if not innings:
         raise HTTPException(status_code=400, detail="Match not initialized")
 
-    # Get all potential bowlers (bowlers and all-rounders)
-    bowlers = [p for p in innings.bowling_team if p.role in [PlayerRole.BOWLER, PlayerRole.ALL_ROUNDER]]
+    # Get all players, sorted by bowling skill (best bowlers first)
+    bowlers = sorted(innings.bowling_team, key=lambda p: p.bowling, reverse=True)
 
     available_bowlers = []
     for b in bowlers:
@@ -981,10 +981,6 @@ def select_bowler_manual(career_id: int, fixture_id: int, request: SelectBowlerR
     bowler = next((p for p in innings.bowling_team if p.id == request.bowler_id), None)
     if not bowler:
         raise HTTPException(status_code=400, detail="Invalid bowler selection")
-
-    # Validate bowler can bowl
-    if bowler.role not in [PlayerRole.BOWLER, PlayerRole.ALL_ROUNDER]:
-        raise HTTPException(status_code=400, detail="Selected player is not a bowler")
 
     spell = innings.bowler_spells.get(bowler.id)
     if spell and spell.overs >= 4:

@@ -148,7 +148,13 @@ class PlayerGenerator:
         if role in [PlayerRole.BOWLER, PlayerRole.ALL_ROUNDER]:
             bowling_type = cls._weighted_choice(cls.BOWLING_TYPES[role])
         else:
-            bowling_type = BowlingType.NONE
+            # Part-timers get random medium or spin
+            bowling_type = random.choice([
+                BowlingType.MEDIUM,
+                BowlingType.OFF_SPIN,
+                BowlingType.LEG_SPIN,
+                BowlingType.LEFT_ARM_SPIN
+            ])
 
         # Base attributes by tier (adjusted to ensure 55+ OVR)
         # OVR formula uses weighted average, variance can push down by ~8-10 points
