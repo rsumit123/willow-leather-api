@@ -380,12 +380,10 @@ class MatchEngine:
     ) -> InningsState:
         """Initialize an innings"""
 
-        # Sort batters by role (proper batting order)
+        # Sort batters by batting skill (bowlers bat last)
         batting_order = sorted(batting_team, key=lambda p: (
-            0 if p.role == PlayerRole.WICKET_KEEPER else
-            1 if p.role == PlayerRole.BATSMAN else
-            2 if p.role == PlayerRole.ALL_ROUNDER else 3,
-            -p.batting
+            1 if p.role == PlayerRole.BOWLER else 0,  # Bowlers bat last
+            -p.batting  # Then by batting skill (highest first)
         ))
 
         innings = InningsState(

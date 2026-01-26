@@ -3,6 +3,7 @@ from app.models.team import Team
 from app.models.match import Match, Innings, BallEvent
 from app.models.career import Career, Season, Fixture, TeamSeasonStats
 from app.models.auction import Auction, AuctionPlayerEntry, AuctionBid, TeamAuctionState
+from app.models.playing_xi import PlayingXI
 
 __all__ = [
     "Player",
@@ -18,4 +19,5 @@ __all__ = [
     "AuctionPlayerEntry",
     "AuctionBid",
     "TeamAuctionState",
+    "PlayingXI",
 ]

@@ -8,6 +8,7 @@ from app.models.career import Career, Fixture, FixtureStatus, FixtureType, Seaso
 from app.models.team import Team
 from app.models.player import Player, PlayerRole
 from app.models.match import Match, MatchStatus
+from app.models.playing_xi import PlayingXI
 from app.engine.match_engine import (
     MatchEngine, InningsState, BallOutcome,
     BatterState, BowlerState, BatterInnings, BowlerSpell
@@ -33,6 +34,22 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def _get_playing_xi(team: Team, season_id: int, db: Session) -> list:
+    """Get playing XI for a team. Uses stored XI if exists, falls back to top 11 by rating."""
+    xi_entries = db.query(PlayingXI).filter_by(
+        team_id=team.id,
+        season_id=season_id
+    ).order_by(PlayingXI.position).all()
+
+    if xi_entries and len(xi_entries) == 11:
+        # Use stored XI
+        return [entry.player for entry in xi_entries]
+
+    # Fallback: top 11 by overall rating
+    return sorted(team.players, key=lambda p: p.overall_rating, reverse=True)[:11]
+
 
 def _refresh_engine_players(engine: MatchEngine, db: Session):
     """Re-bind player objects to the current database session to avoid DetachedInstanceError"""
@@ -257,10 +274,12 @@ def start_match(
     team1 = db.query(Team).get(fixture.team1_id)
     team2 = db.query(Team).get(fixture.team2_id)
 
-    # Select XI (reusing SeasonEngine logic or simplified here)
-    # For now, just take top 11 by rating
-    team1_players = sorted(team1.players, key=lambda p: p.overall_rating, reverse=True)[:11]
-    team2_players = sorted(team2.players, key=lambda p: p.overall_rating, reverse=True)[:11]
+    # Get season for XI lookup
+    season = db.query(Season).get(fixture.season_id)
+
+    # Get playing XI (stored or fallback to top 11 by rating)
+    team1_players = _get_playing_xi(team1, season.id, db)
+    team2_players = _get_playing_xi(team2, season.id, db)
 
     engine = MatchEngine()
 
@@ -342,8 +361,11 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
             target = engine.innings1.total_runs + 1
             # Second team bats
             team1_bats_first = engine.innings1.batting_team_id == fixture.team1_id
-            batting_team_players = sorted(fixture.team2.players if team1_bats_first else fixture.team1.players, key=lambda p: p.overall_rating, reverse=True)[:11]
-            bowling_team_players = sorted(fixture.team1.players if team1_bats_first else fixture.team2.players, key=lambda p: p.overall_rating, reverse=True)[:11]
+            season = db.query(Season).get(fixture.season_id)
+            batting_team = fixture.team2 if team1_bats_first else fixture.team1
+            bowling_team = fixture.team1 if team1_bats_first else fixture.team2
+            batting_team_players = _get_playing_xi(batting_team, season.id, db)
+            bowling_team_players = _get_playing_xi(bowling_team, season.id, db)
 
             engine.innings2 = engine.setup_innings(batting_team_players, bowling_team_players, target=target)
             engine.innings2.batting_team_id = fixture.team2_id if team1_bats_first else fixture.team1_id
@@ -597,8 +619,11 @@ def simulate_over_interactive(career_id: int, fixture_id: int, request: Optional
         # Start 2nd innings
         target = engine.innings1.total_runs + 1
         team1_bats_first = engine.innings1.batting_team_id == fixture.team1_id
-        batting_team_players = sorted(fixture.team2.players if team1_bats_first else fixture.team1.players, key=lambda p: p.overall_rating, reverse=True)[:11]
-        bowling_team_players = sorted(fixture.team1.players if team1_bats_first else fixture.team2.players, key=lambda p: p.overall_rating, reverse=True)[:11]
+        season = db.query(Season).get(fixture.season_id)
+        batting_team = fixture.team2 if team1_bats_first else fixture.team1
+        bowling_team = fixture.team1 if team1_bats_first else fixture.team2
+        batting_team_players = _get_playing_xi(batting_team, season.id, db)
+        bowling_team_players = _get_playing_xi(bowling_team, season.id, db)
 
         engine.innings2 = engine.setup_innings(batting_team_players, bowling_team_players, target=target)
         engine.innings2.batting_team_id = fixture.team2_id if team1_bats_first else fixture.team1_id
@@ -637,8 +662,11 @@ def simulate_innings_interactive(career_id: int, fixture_id: int, db: Session = 
         # Start 2nd innings
         target = engine.innings1.total_runs + 1
         team1_bats_first = engine.innings1.batting_team_id == fixture.team1_id
-        batting_team_players = sorted(fixture.team2.players if team1_bats_first else fixture.team1.players, key=lambda p: p.overall_rating, reverse=True)[:11]
-        bowling_team_players = sorted(fixture.team1.players if team1_bats_first else fixture.team2.players, key=lambda p: p.overall_rating, reverse=True)[:11]
+        season = db.query(Season).get(fixture.season_id)
+        batting_team = fixture.team2 if team1_bats_first else fixture.team1
+        bowling_team = fixture.team1 if team1_bats_first else fixture.team2
+        batting_team_players = _get_playing_xi(batting_team, season.id, db)
+        bowling_team_players = _get_playing_xi(bowling_team, season.id, db)
 
         engine.innings2 = engine.setup_innings(batting_team_players, bowling_team_players, target=target)
         engine.innings2.batting_team_id = fixture.team2_id if team1_bats_first else fixture.team1_id

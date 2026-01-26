@@ -17,7 +17,8 @@ from app.engine.auction_engine import AuctionEngine
 from app.api.schemas import (
     AuctionStateResponse, TeamAuctionStateResponse, BidResponse,
     AuctionPlayerResult, PlayerBrief, CategoryPlayersResponse,
-    SkipCategoryResponse, SkipCategoryPlayerResult, SoldPlayerBrief
+    SkipCategoryResponse, SkipCategoryPlayerResult, SoldPlayerBrief,
+    AutoBidRequest, AutoBidResponse
 )
 
 router = APIRouter(prefix="/auction", tags=["Auction"])
@@ -550,3 +551,57 @@ def quick_pass_player(career_id: int, db: Session = Depends(get_db)):
         sold_price=result.winning_bid,
         bid_history=result.bid_history,
     )
+
+
+@router.post("/{career_id}/auto-bid", response_model=AutoBidResponse)
+def auto_bid(career_id: int, request: AutoBidRequest, db: Session = Depends(get_db)):
+    """
+    Auto-bid on current player up to max_bid.
+    Returns status: won/lost (finalized) or cap_exceeded/budget_limit (user decides).
+    """
+    career, season, auction = get_current_auction(career_id, db)
+
+    if auction.status != AuctionStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="Auction not in progress")
+
+    if not auction.current_player_id:
+        raise HTTPException(status_code=400, detail="No player currently being auctioned")
+
+    engine = AuctionEngine(db, auction)
+    user_team = db.query(Team).filter_by(career_id=career_id, is_user_team=True).first()
+
+    if not user_team:
+        raise HTTPException(status_code=400, detail="User team not found")
+
+    player_entry = db.query(AuctionPlayerEntry).filter_by(
+        auction_id=auction.id,
+        player_id=auction.current_player_id
+    ).first()
+
+    if not player_entry:
+        raise HTTPException(status_code=404, detail="Player entry not found")
+
+    result = engine.run_auto_bid_competition(
+        player_entry,
+        user_team.id,
+        request.max_bid
+    )
+
+    if result.status in ("won", "lost"):
+        return AutoBidResponse(
+            status=result.status,
+            player_id=result.final_result.player.id,
+            player_name=result.final_result.player.name,
+            is_sold=result.final_result.is_sold,
+            sold_to_team_id=result.final_result.winning_team.id if result.final_result.winning_team else None,
+            sold_to_team_name=result.final_result.winning_team.short_name if result.final_result.winning_team else None,
+            sold_price=result.final_result.winning_bid,
+        )
+    else:
+        # cap_exceeded or budget_limit
+        return AutoBidResponse(
+            status=result.status,
+            current_bid=result.current_bid,
+            current_bidder_team_name=result.current_bidder_team_name,
+            next_bid_needed=result.next_bid_needed,
+        )

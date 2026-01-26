@@ -174,6 +174,25 @@ class AuctionPlayerResult(BaseModel):
     bid_history: list[dict]
 
 
+class AutoBidRequest(BaseModel):
+    max_bid: int  # User's maximum bid in rupees
+
+
+class AutoBidResponse(BaseModel):
+    status: str  # "won", "lost", "cap_exceeded", "budget_limit"
+    # Filled when status is "won" or "lost"
+    player_id: Optional[int] = None
+    player_name: Optional[str] = None
+    is_sold: Optional[bool] = None
+    sold_to_team_id: Optional[int] = None
+    sold_to_team_name: Optional[str] = None
+    sold_price: Optional[int] = None
+    # Filled when status is "cap_exceeded" or "budget_limit"
+    current_bid: Optional[int] = None
+    current_bidder_team_name: Optional[str] = None
+    next_bid_needed: Optional[int] = None
+
+
 class SkipCategoryPlayerResult(BaseModel):
     player_id: int
     player_name: str
@@ -346,3 +365,24 @@ class SquadResponse(BaseModel):
     players: list[PlayerResponse]
     total_players: int
     overseas_count: int
+
+
+# Playing XI Schemas
+class PlayingXIRequest(BaseModel):
+    player_ids: list[int]
+
+
+class PlayingXIPlayerResponse(PlayerResponse):
+    position: int
+
+
+class PlayingXIResponse(BaseModel):
+    players: list[PlayingXIPlayerResponse]
+    is_valid: bool
+    is_set: bool
+
+
+class PlayingXIValidationResponse(BaseModel):
+    valid: bool
+    errors: list[str]
+    breakdown: dict

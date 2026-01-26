@@ -10,10 +10,13 @@ from app.models.career import Career, Season, CareerStatus, SeasonPhase
 from app.models.team import Team
 from app.models.player import Player
 from app.models.auction import Auction, AuctionStatus
+from app.models.playing_xi import PlayingXI
 from app.generators import PlayerGenerator, TeamGenerator
+from app.validators.playing_xi_validator import PlayingXIValidator
 from app.api.schemas import (
     CareerCreate, CareerResponse, CareerDetail, TeamChoice, TeamResponse,
-    SquadResponse, PlayerResponse
+    SquadResponse, PlayerResponse, PlayingXIRequest, PlayingXIPlayerResponse,
+    PlayingXIResponse, PlayingXIValidationResponse
 )
 
 router = APIRouter(prefix="/career", tags=["Career"])
@@ -193,4 +196,180 @@ def get_team_squad(career_id: int, team_id: int, db: Session = Depends(get_db)):
         players=player_responses,
         total_players=len(players),
         overseas_count=sum(1 for p in players if p.is_overseas),
+    )
+
+
+@router.get("/{career_id}/playing-xi", response_model=PlayingXIResponse)
+def get_playing_xi(career_id: int, db: Session = Depends(get_db)):
+    """Get user team's playing XI"""
+    career = db.query(Career).filter_by(id=career_id).first()
+    if not career:
+        raise HTTPException(status_code=404, detail="Career not found")
+
+    # Get current season
+    season = db.query(Season).filter_by(
+        career_id=career_id,
+        season_number=career.current_season_number
+    ).first()
+    if not season:
+        raise HTTPException(status_code=404, detail="Season not found")
+
+    # Get playing XI entries for user's team
+    xi_entries = db.query(PlayingXI).filter_by(
+        team_id=career.user_team_id,
+        season_id=season.id
+    ).order_by(PlayingXI.position).all()
+
+    players = []
+    for entry in xi_entries:
+        p = entry.player
+        players.append(PlayingXIPlayerResponse(
+            id=p.id,
+            name=p.name,
+            age=p.age,
+            nationality=p.nationality,
+            is_overseas=p.is_overseas,
+            role=p.role.value,
+            batting=p.batting,
+            bowling=p.bowling,
+            overall_rating=p.overall_rating,
+            team_id=p.team_id,
+            base_price=p.base_price,
+            sold_price=p.sold_price,
+            form=p.form,
+            batting_style=p.batting_style.value,
+            bowling_type=p.bowling_type.value,
+            position=entry.position,
+        ))
+
+    # Validate if we have players
+    is_valid = False
+    if players:
+        player_objs = [entry.player for entry in xi_entries]
+        validation = PlayingXIValidator.validate(player_objs)
+        is_valid = validation["valid"]
+
+    return PlayingXIResponse(
+        players=players,
+        is_valid=is_valid,
+        is_set=len(players) == 11,
+    )
+
+
+@router.post("/{career_id}/playing-xi", response_model=PlayingXIResponse)
+def set_playing_xi(career_id: int, request: PlayingXIRequest, db: Session = Depends(get_db)):
+    """Set user team's playing XI (validates before saving)"""
+    career = db.query(Career).filter_by(id=career_id).first()
+    if not career:
+        raise HTTPException(status_code=404, detail="Career not found")
+
+    # Check career status allows XI changes (PRE_SEASON or IN_SEASON)
+    if career.status not in [CareerStatus.PRE_SEASON, CareerStatus.IN_SEASON]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot set playing XI in {career.status.value} status"
+        )
+
+    # Get current season
+    season = db.query(Season).filter_by(
+        career_id=career_id,
+        season_number=career.current_season_number
+    ).first()
+    if not season:
+        raise HTTPException(status_code=404, detail="Season not found")
+
+    # Get the players
+    players = db.query(Player).filter(
+        Player.id.in_(request.player_ids),
+        Player.team_id == career.user_team_id
+    ).all()
+
+    # Check all players belong to user's team
+    if len(players) != len(request.player_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="Some players not found or don't belong to your team"
+        )
+
+    # Validate the XI
+    validation = PlayingXIValidator.validate(players)
+    if not validation["valid"]:
+        raise HTTPException(
+            status_code=400,
+            detail="; ".join(validation["errors"])
+        )
+
+    # Clear existing XI for this team/season
+    db.query(PlayingXI).filter_by(
+        team_id=career.user_team_id,
+        season_id=season.id
+    ).delete()
+
+    # Save new XI with positions based on order in request
+    for pos, player_id in enumerate(request.player_ids, 1):
+        xi_entry = PlayingXI(
+            team_id=career.user_team_id,
+            season_id=season.id,
+            player_id=player_id,
+            position=pos
+        )
+        db.add(xi_entry)
+
+    db.commit()
+
+    # Return the saved XI
+    xi_entries = db.query(PlayingXI).filter_by(
+        team_id=career.user_team_id,
+        season_id=season.id
+    ).order_by(PlayingXI.position).all()
+
+    player_responses = []
+    for entry in xi_entries:
+        p = entry.player
+        player_responses.append(PlayingXIPlayerResponse(
+            id=p.id,
+            name=p.name,
+            age=p.age,
+            nationality=p.nationality,
+            is_overseas=p.is_overseas,
+            role=p.role.value,
+            batting=p.batting,
+            bowling=p.bowling,
+            overall_rating=p.overall_rating,
+            team_id=p.team_id,
+            base_price=p.base_price,
+            sold_price=p.sold_price,
+            form=p.form,
+            batting_style=p.batting_style.value,
+            bowling_type=p.bowling_type.value,
+            position=entry.position,
+        ))
+
+    return PlayingXIResponse(
+        players=player_responses,
+        is_valid=True,
+        is_set=True,
+    )
+
+
+@router.post("/{career_id}/playing-xi/validate", response_model=PlayingXIValidationResponse)
+def validate_playing_xi(career_id: int, request: PlayingXIRequest, db: Session = Depends(get_db)):
+    """Validate proposed XI without saving (for real-time feedback)"""
+    career = db.query(Career).filter_by(id=career_id).first()
+    if not career:
+        raise HTTPException(status_code=404, detail="Career not found")
+
+    # Get the players
+    players = db.query(Player).filter(
+        Player.id.in_(request.player_ids),
+        Player.team_id == career.user_team_id
+    ).all()
+
+    # Validate the XI
+    validation = PlayingXIValidator.validate(players)
+
+    return PlayingXIValidationResponse(
+        valid=validation["valid"],
+        errors=validation["errors"],
+        breakdown=validation["breakdown"]
     )

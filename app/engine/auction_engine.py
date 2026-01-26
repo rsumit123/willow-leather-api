@@ -25,6 +25,17 @@ class BidResult:
 
 
 @dataclass
+class AutoBidResult:
+    """Result of auto-bid competition"""
+    status: str  # "won", "lost", "cap_exceeded", "budget_limit"
+    final_result: Optional[BidResult]  # Set if status is "won" or "lost"
+    current_bid: int
+    current_bidder_team_id: Optional[int]
+    current_bidder_team_name: Optional[str]
+    next_bid_needed: int  # What user would need to bid next
+
+
+@dataclass
 class TeamNeeds:
     """Analysis of what a team needs"""
     needs_batsmen: int
@@ -652,3 +663,114 @@ class AuctionEngine:
 
         # Finalize and return result
         return self.finalize_player(player_entry)
+
+    def run_auto_bid_competition(
+        self,
+        player_entry: AuctionPlayerEntry,
+        user_team_id: int,
+        user_max_bid: int
+    ) -> AutoBidResult:
+        """
+        Run bidding with user participating up to their max bid.
+        Returns immediately if user's cap is exceeded (gives them chance to increase).
+        """
+        player = player_entry.player
+        consecutive_passes = 0
+        max_rounds = 200
+
+        # Pre-calculate AI team valuations
+        team_valuations = {
+            team_id: self._calculate_player_value(player, team_id)
+            for team_id in self._team_states.keys()
+            if team_id != user_team_id
+        }
+
+        user_state = self._team_states[user_team_id]
+
+        for _ in range(max_rounds):
+            if consecutive_passes >= 2:
+                break
+
+            current_bid = self.auction.current_bid
+            next_bid = self.get_next_bid_amount(current_bid)
+
+            # Check if user CAN'T continue (cap exceeded or budget limit)
+            user_is_highest = self.auction.current_bidder_team_id == user_team_id
+
+            if not user_is_highest:
+                # User needs to bid - check if they can
+                if next_bid > user_max_bid:
+                    # Cap exceeded - return to let user decide
+                    current_bidder = self.session.query(Team).get(self.auction.current_bidder_team_id)
+                    return AutoBidResult(
+                        status="cap_exceeded",
+                        final_result=None,
+                        current_bid=current_bid,
+                        current_bidder_team_id=self.auction.current_bidder_team_id,
+                        current_bidder_team_name=current_bidder.short_name if current_bidder else None,
+                        next_bid_needed=next_bid,
+                    )
+
+                if next_bid > user_state.max_bid_possible:
+                    # Budget reserve limit - return to let user know
+                    current_bidder = self.session.query(Team).get(self.auction.current_bidder_team_id)
+                    return AutoBidResult(
+                        status="budget_limit",
+                        final_result=None,
+                        current_bid=current_bid,
+                        current_bidder_team_id=self.auction.current_bidder_team_id,
+                        current_bidder_team_name=current_bidder.short_name if current_bidder else None,
+                        next_bid_needed=next_bid,
+                    )
+
+            # Collect willing bidders
+            willing_bidders = []
+
+            # User bids if not highest and can afford
+            if (not user_is_highest and
+                next_bid <= user_max_bid and
+                next_bid <= user_state.max_bid_possible and
+                user_state.total_players < 25 and
+                (not player.is_overseas or user_state.overseas_players < 8)):
+                willing_bidders.append(user_team_id)
+
+            # AI teams bid based on valuation
+            for team_id, max_val in team_valuations.items():
+                if team_id == self.auction.current_bidder_team_id:
+                    continue
+                state = self._team_states[team_id]
+                if state.total_players >= 25:
+                    continue
+                if player.is_overseas and state.overseas_players >= 8:
+                    continue
+                if next_bid > state.max_bid_possible:
+                    continue
+                if next_bid <= max_val:
+                    ratio = next_bid / max_val if max_val > 0 else 1.0
+                    prob = max(0.2, 1.0 - (ratio * 0.7))
+                    if random.random() < prob:
+                        willing_bidders.append(team_id)
+
+            if not willing_bidders:
+                consecutive_passes += 1
+                continue
+
+            bidder = random.choice(willing_bidders)
+            if self.place_bid(bidder, player.id, next_bid):
+                consecutive_passes = 0
+            else:
+                consecutive_passes += 1
+
+        # Bidding complete - finalize
+        result = self.finalize_player(player_entry)
+
+        status = "won" if result.winning_team and result.winning_team.id == user_team_id else "lost"
+
+        return AutoBidResult(
+            status=status,
+            final_result=result,
+            current_bid=result.winning_bid,
+            current_bidder_team_id=result.winning_team.id if result.winning_team else None,
+            current_bidder_team_name=result.winning_team.short_name if result.winning_team else None,
+            next_bid_needed=0,
+        )

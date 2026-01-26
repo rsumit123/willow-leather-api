@@ -11,7 +11,10 @@ from app.models.career import (
     CareerStatus, SeasonPhase, FixtureType, FixtureStatus
 )
 from app.models.team import Team
+from app.models.player import PlayerRole
+from app.models.playing_xi import PlayingXI
 from app.engine.season_engine import SeasonEngine
+from app.validators.playing_xi_validator import PlayingXIValidator
 from app.api.schemas import (
     SeasonResponse, FixtureResponse, StandingResponse, MatchResultResponse
 )
@@ -25,6 +28,83 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def _auto_select_xi(team: Team) -> list:
+    """Auto-select a valid playing XI for a team (AI logic)."""
+    players = list(team.players)
+
+    # Group by role
+    wks = [p for p in players if p.role == PlayerRole.WICKET_KEEPER]
+    batsmen = [p for p in players if p.role == PlayerRole.BATSMAN]
+    all_rounders = [p for p in players if p.role == PlayerRole.ALL_ROUNDER]
+    bowlers = [p for p in players if p.role == PlayerRole.BOWLER]
+
+    # Sort each group by overall rating
+    wks.sort(key=lambda p: p.overall_rating, reverse=True)
+    batsmen.sort(key=lambda p: p.overall_rating, reverse=True)
+    all_rounders.sort(key=lambda p: p.overall_rating, reverse=True)
+    bowlers.sort(key=lambda p: p.overall_rating, reverse=True)
+
+    xi = []
+    overseas_count = 0
+
+    def can_add(player):
+        nonlocal overseas_count
+        if player.is_overseas and overseas_count >= 4:
+            return False
+        return True
+
+    def add_player(player):
+        nonlocal overseas_count
+        xi.append(player)
+        if player.is_overseas:
+            overseas_count += 1
+
+    # Add 1 WK (mandatory)
+    for wk in wks:
+        if can_add(wk):
+            add_player(wk)
+            break
+
+    # Add 5 bowlers (to meet minimum requirement)
+    for bowler in bowlers:
+        if len([p for p in xi if p.role == PlayerRole.BOWLER]) >= 5:
+            break
+        if can_add(bowler):
+            add_player(bowler)
+
+    # If we don't have 5 bowlers, add all-rounders to compensate
+    bowler_count = len([p for p in xi if p.role == PlayerRole.BOWLER])
+    if bowler_count < 5:
+        needed_ar = max(1, 5 - bowler_count - 4)  # Need at least 1 AR if less than 5 bowlers
+        for ar in all_rounders:
+            if ar not in xi and can_add(ar):
+                add_player(ar)
+                if len([p for p in xi if p.role == PlayerRole.ALL_ROUNDER]) >= needed_ar:
+                    break
+
+    # Fill remaining with best available (batsmen first, then all-rounders)
+    remaining_players = batsmen + [ar for ar in all_rounders if ar not in xi]
+    remaining_players.sort(key=lambda p: p.overall_rating, reverse=True)
+
+    for player in remaining_players:
+        if len(xi) >= 11:
+            break
+        if player not in xi and can_add(player):
+            add_player(player)
+
+    # If still not at 11, add any remaining players regardless of overseas
+    if len(xi) < 11:
+        all_remaining = [p for p in players if p not in xi]
+        all_remaining.sort(key=lambda p: p.overall_rating, reverse=True)
+        for player in all_remaining:
+            if len(xi) >= 11:
+                break
+            if player not in xi:
+                add_player(player)
+
+    return xi
 
 
 def get_current_season(career_id: int, db: Session) -> tuple[Career, Season]:
@@ -75,6 +155,18 @@ def generate_fixtures(career_id: int, db: Session = Depends(get_db)):
 
     # Generate fixtures
     fixtures = engine.generate_league_fixtures(teams)
+
+    # Auto-select and store XI for AI teams
+    for team in teams:
+        if not team.is_user_team:
+            xi = _auto_select_xi(team)
+            for pos, player in enumerate(xi, 1):
+                db.add(PlayingXI(
+                    team_id=team.id,
+                    season_id=season.id,
+                    player_id=player.id,
+                    position=pos
+                ))
 
     # Update career status
     career.status = CareerStatus.IN_SEASON
