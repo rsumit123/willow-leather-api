@@ -86,10 +86,33 @@ class PlayerGenerator:
         return random.choices(items, weights=weights, k=1)[0]
 
     @staticmethod
-    def _generate_attribute(base: int, variance: int = 15) -> int:
+    def _generate_attribute(base: int, variance: int = 15, minimum: int = 1) -> int:
         """Generate an attribute value with some variance"""
         value = base + random.randint(-variance, variance)
-        return max(1, min(100, value))  # Clamp between 1-100
+        return max(minimum, min(100, value))  # Clamp between minimum-100
+
+    @staticmethod
+    def _ensure_minimum_ovr(player: Player, min_ovr: int = 55) -> Player:
+        """
+        Ensure a player has at least the minimum OVR by boosting primary attributes.
+        """
+        while player.overall_rating < min_ovr:
+            diff = min_ovr - player.overall_rating + 2  # Add a small buffer
+            # Boost primary attribute based on role
+            if player.role == PlayerRole.BATSMAN:
+                player.batting = min(100, player.batting + diff)
+            elif player.role == PlayerRole.BOWLER:
+                player.bowling = min(100, player.bowling + diff)
+            elif player.role == PlayerRole.ALL_ROUNDER:
+                boost = diff // 2 + 1
+                player.batting = min(100, player.batting + boost)
+                player.bowling = min(100, player.bowling + boost)
+            elif player.role == PlayerRole.WICKET_KEEPER:
+                boost_bat = (diff * 5) // 9 + 1
+                boost_field = (diff * 4) // 9 + 1
+                player.batting = min(100, player.batting + boost_bat)
+                player.fielding = min(100, player.fielding + boost_field)
+        return player
 
     @classmethod
     def generate_player(cls, role: PlayerRole = None, nationality: str = None, tier: str = "average") -> Player:
@@ -127,14 +150,16 @@ class PlayerGenerator:
         else:
             bowling_type = BowlingType.NONE
 
-        # Base attributes by tier
+        # Base attributes by tier (adjusted to ensure 55+ OVR)
+        # OVR formula uses weighted average, variance can push down by ~8-10 points
+        # So base needs to be 8-10 higher than target OVR minimum
         tier_bases = {
-            "star": random.randint(70, 85),
-            "good": random.randint(55, 70),
-            "average": random.randint(40, 55),
-            "developing": random.randint(25, 40),
+            "elite": random.randint(80, 90),    # OVR ~85-95
+            "star": random.randint(70, 80),     # OVR ~75-85
+            "good": random.randint(62, 72),     # OVR ~65-75
+            "solid": random.randint(58, 65),    # OVR ~55-68 (ensures 55+ minimum)
         }
-        base = tier_bases.get(tier, tier_bases["average"])
+        base = tier_bases.get(tier, tier_bases["solid"])
 
         # Generate attributes based on role
         if role == PlayerRole.BATSMAN:
@@ -176,14 +201,14 @@ class PlayerGenerator:
             variation = cls._generate_attribute(15, 10)
 
         # Age based on tier
-        if tier == "star":
-            age = random.randint(26, 34)
+        if tier == "elite":
+            age = random.randint(27, 34)
+        elif tier == "star":
+            age = random.randint(25, 33)
         elif tier == "good":
-            age = random.randint(24, 32)
-        elif tier == "developing":
-            age = random.randint(18, 23)
-        else:
-            age = random.randint(22, 30)
+            age = random.randint(23, 31)
+        else:  # solid
+            age = random.randint(21, 29)
 
         # Assign 0-2 traits
         num_traits = random.choices([0, 1, 2], weights=[40, 40, 20])[0]
@@ -197,10 +222,10 @@ class PlayerGenerator:
 
         # Base price based on tier and role
         base_prices = {
-            "star": random.randint(10000000, 20000000),
-            "good": random.randint(5000000, 10000000),
-            "average": random.randint(2000000, 5000000),
-            "developing": random.randint(2000000, 3000000),
+            "elite": random.randint(15000000, 25000000),   # 1.5-2.5 crore
+            "star": random.randint(10000000, 15000000),    # 1-1.5 crore
+            "good": random.randint(5000000, 10000000),     # 50L-1 crore
+            "solid": random.randint(2000000, 5000000),     # 20L-50L
         }
         base_price = base_prices.get(tier, 2000000)
 
@@ -230,40 +255,52 @@ class PlayerGenerator:
             base_price=base_price,
         )
 
+        # Ensure minimum OVR of 55
+        player = cls._ensure_minimum_ovr(player, min_ovr=55)
+
         return player
 
     @classmethod
-    def generate_player_pool(cls, count: int = 150) -> list[Player]:
+    def _random_overseas_nationality(cls) -> str:
+        """Get a random overseas nationality (non-India)."""
+        overseas = [n for n in cls.NATIONALITIES if n[2]]  # is_overseas=True
+        return cls._weighted_choice([(n[0], n[3]) for n in overseas])
+
+    @classmethod
+    def generate_player_pool(cls, count: int = 230) -> list[Player]:
         """
         Generate a pool of players for the auction.
-        Distribution: ~15 stars, ~35 good, ~60 average, ~40 developing
+        Target: 230 players (25 per team * 8 teams + 30 buffer), all with 55+ OVR.
+        Distribution: ~20 elite, ~40 star, ~80 good, ~90 solid
+        Overseas: ~80 players (enough for 8 per team * 8 teams + buffer)
         """
         players = []
 
-        # Generate star players (mix of Indian and overseas)
-        for _ in range(5):
+        # Generate elite players (20 total: 8 Indian, 12 overseas)
+        for _ in range(8):
+            players.append(cls.generate_player(tier="elite", nationality="India"))
+        for _ in range(12):
+            players.append(cls.generate_player(tier="elite", nationality=cls._random_overseas_nationality()))
+
+        # Generate star players (40 total: 18 Indian, 22 overseas)
+        for _ in range(18):
             players.append(cls.generate_player(tier="star", nationality="India"))
-        for _ in range(10):
-            players.append(cls.generate_player(tier="star"))
+        for _ in range(22):
+            players.append(cls.generate_player(tier="star", nationality=cls._random_overseas_nationality()))
 
-        # Generate good players
-        for _ in range(15):
+        # Generate good players (80 total: 50 Indian, 30 overseas)
+        for _ in range(50):
             players.append(cls.generate_player(tier="good", nationality="India"))
-        for _ in range(20):
-            players.append(cls.generate_player(tier="good"))
+        for _ in range(30):
+            players.append(cls.generate_player(tier="good", nationality=cls._random_overseas_nationality()))
 
-        # Generate average players
-        for _ in range(40):
-            players.append(cls.generate_player(tier="average", nationality="India"))
-        for _ in range(20):
-            players.append(cls.generate_player(tier="average"))
+        # Generate solid players (90 total: 74 Indian, 16 overseas)
+        for _ in range(74):
+            players.append(cls.generate_player(tier="solid", nationality="India"))
+        for _ in range(16):
+            players.append(cls.generate_player(tier="solid", nationality=cls._random_overseas_nationality()))
 
-        # Generate developing players (mostly Indian)
-        for _ in range(35):
-            players.append(cls.generate_player(tier="developing", nationality="India"))
-        for _ in range(5):
-            players.append(cls.generate_player(tier="developing"))
-
+        # Total: 230 players (150 Indian, 80 overseas)
         return players
 
     @classmethod

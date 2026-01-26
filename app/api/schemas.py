@@ -138,6 +138,17 @@ class AuctionStateResponse(BaseModel):
     players_sold: int
     players_unsold: int
     total_players: int
+    current_category: Optional[str] = None
+
+
+class NextPlayerResponse(BaseModel):
+    auction_finished: bool
+    player: Optional[PlayerBrief] = None
+    starting_bid: Optional[int] = None
+    category: Optional[str] = None
+    previous_category: Optional[str] = None
+    category_changed: bool = False
+    category_display_name: Optional[str] = None
 
 
 class TeamAuctionStateResponse(BaseModel):
@@ -267,7 +278,6 @@ class PlayerStateBrief(BaseModel):
     sixes: int = 0
     is_out: bool = False
     is_settled: bool = False
-    is_nervous: bool = False
     is_on_fire: bool = False
 
 
@@ -297,7 +307,6 @@ class MatchStateResponse(BaseModel):
 
     pitch_type: str
     is_pressure: bool
-    is_collapse: bool
     partnership_runs: int
 
     this_over: list[str]
@@ -317,6 +326,30 @@ class MatchStateResponse(BaseModel):
 
     # Innings change indicator
     innings_just_changed: bool = False
+
+    # Bowler change indicator
+    can_change_bowler: bool = False
+
+
+# Bowler Selection Schemas
+class AvailableBowlerResponse(BaseModel):
+    id: int
+    name: str
+    overs_bowled: int
+    wickets: int
+    runs_conceded: int
+    economy: float
+    can_bowl: bool
+    reason: Optional[str] = None
+
+
+class AvailableBowlersResponse(BaseModel):
+    bowlers: list[AvailableBowlerResponse]
+    last_bowler_id: Optional[int] = None
+
+
+class SelectBowlerRequest(BaseModel):
+    bowler_id: int
 
 
 class BallRequest(BaseModel):

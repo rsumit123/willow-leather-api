@@ -555,19 +555,24 @@ class AuctionEngine:
 
         return categories
 
-    def run_competitive_ai_bidding(self, player_entry: AuctionPlayerEntry) -> None:
+    def run_competitive_ai_bidding(self, player_entry: AuctionPlayerEntry, exclude_team_id: int = None) -> None:
         """
         All AI teams compete for a player - no user participation.
         Maintains economy by ensuring competitive bidding.
+
+        Args:
+            exclude_team_id: Team ID to exclude from bidding (typically user's team when skipping)
         """
         player = player_entry.player
         consecutive_passes = 0
         max_rounds = 100  # Safety limit
 
         # Pre-calculate each team's max valuation for this player
+        # Exclude the specified team (user's team when skipping)
         team_valuations = {
             team_id: self._calculate_player_value(player, team_id)
             for team_id in self._team_states.keys()
+            if team_id != exclude_team_id
         }
 
         for _ in range(max_rounds):
@@ -625,10 +630,13 @@ class AuctionEngine:
             else:
                 consecutive_passes += 1
 
-    def auction_category_ai_only(self, category: str) -> list[dict]:
+    def auction_category_ai_only(self, category: str, exclude_team_id: int = None) -> list[dict]:
         """
         Auction all remaining players in a category with AI-only bidding.
         Returns list of results for each player.
+
+        Args:
+            exclude_team_id: Team ID to exclude from bidding (user's team when they skip a category)
         """
         entries = self._get_available_players_in_category(category)
         results = []
@@ -637,8 +645,8 @@ class AuctionEngine:
             # Start bidding on this player
             self.start_bidding(entry)
 
-            # Run competitive AI bidding
-            self.run_competitive_ai_bidding(entry)
+            # Run competitive AI bidding, excluding user's team
+            self.run_competitive_ai_bidding(entry, exclude_team_id=exclude_team_id)
 
             # Finalize the player
             result = self.finalize_player(entry)

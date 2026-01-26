@@ -18,7 +18,7 @@ from app.api.schemas import (
     AuctionStateResponse, TeamAuctionStateResponse, BidResponse,
     AuctionPlayerResult, PlayerBrief, CategoryPlayersResponse,
     SkipCategoryResponse, SkipCategoryPlayerResult, SoldPlayerBrief,
-    AutoBidRequest, AutoBidResponse
+    AutoBidRequest, AutoBidResponse, NextPlayerResponse
 )
 
 router = APIRouter(prefix="/auction", tags=["Auction"])
@@ -144,13 +144,16 @@ def get_teams_auction_state(career_id: int, db: Session = Depends(get_db)):
     return result
 
 
-@router.post("/{career_id}/next-player")
+@router.post("/{career_id}/next-player", response_model=NextPlayerResponse)
 def next_player(career_id: int, db: Session = Depends(get_db)):
     """Move to next player in auction"""
     career, season, auction = get_current_auction(career_id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Auction not in progress")
+
+    # Store previous category before getting next player
+    previous_category = auction.current_category
 
     engine = AuctionEngine(db, auction)
     player_entry = engine.get_next_player()
@@ -162,15 +165,29 @@ def next_player(career_id: int, db: Session = Depends(get_db)):
         season.phase = SeasonPhase.LEAGUE_STAGE
         season.auction_completed = True
         db.commit()
-        return {"message": "Auction complete", "auction_finished": True}
+        return NextPlayerResponse(auction_finished=True)
 
     # Start bidding on this player
     engine.start_bidding(player_entry)
 
     player = player_entry.player
-    return {
-        "auction_finished": False,
-        "player": PlayerBrief(
+    new_category = player_entry.category
+
+    # Determine if category changed
+    category_changed = previous_category is not None and previous_category != new_category
+
+    # Human-readable category names
+    category_display_names = {
+        "marquee": "Marquee Players",
+        "batsmen": "Batsmen",
+        "bowlers": "Bowlers",
+        "all_rounders": "All-Rounders",
+        "wicket_keepers": "Wicket-Keepers",
+    }
+
+    return NextPlayerResponse(
+        auction_finished=False,
+        player=PlayerBrief(
             id=player.id,
             name=player.name,
             role=player.role.value,
@@ -180,8 +197,12 @@ def next_player(career_id: int, db: Session = Depends(get_db)):
             batting_style=player.batting_style.value,
             bowling_type=player.bowling_type.value,
         ),
-        "starting_bid": player.base_price,
-    }
+        starting_bid=player.base_price,
+        category=new_category,
+        previous_category=previous_category,
+        category_changed=category_changed,
+        category_display_name=category_display_names.get(new_category, new_category),
+    )
 
 
 @router.post("/{career_id}/bid", response_model=BidResponse)
@@ -476,7 +497,8 @@ def get_remaining_players(career_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{career_id}/skip-category/{category}", response_model=SkipCategoryResponse)
 def skip_category(career_id: int, category: str, db: Session = Depends(get_db)):
-    """Skip a category - AI teams compete for all players in the category."""
+    """Skip a category - AI teams compete for all players in the category.
+    User's team is excluded from bidding since they chose to skip."""
     career, season, auction = get_current_auction(career_id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
@@ -489,6 +511,10 @@ def skip_category(career_id: int, category: str, db: Session = Depends(get_db)):
 
     engine = AuctionEngine(db, auction)
 
+    # Get user's team ID to exclude them from AI bidding
+    user_team = db.query(Team).filter_by(career_id=career_id, is_user_team=True).first()
+    user_team_id = user_team.id if user_team else None
+
     # If there's a current player in bidding, finalize them first
     if auction.current_player_id:
         current_entry = (
@@ -499,11 +525,11 @@ def skip_category(career_id: int, category: str, db: Session = Depends(get_db)):
         if current_entry and current_entry.status == AuctionPlayerStatus.IN_BIDDING:
             # Only finalize if it's in the same category
             if current_entry.category == category:
-                engine.run_competitive_ai_bidding(current_entry)
+                engine.run_competitive_ai_bidding(current_entry, exclude_team_id=user_team_id)
                 engine.finalize_player(current_entry)
 
-    # Auction all remaining players in the category
-    results = engine.auction_category_ai_only(category)
+    # Auction all remaining players in the category, excluding user's team
+    results = engine.auction_category_ai_only(category, exclude_team_id=user_team_id)
 
     # Check if auction is complete
     if engine.is_auction_complete():

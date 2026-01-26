@@ -16,7 +16,8 @@ from app.engine.match_engine import (
 from app.engine.season_engine import SeasonEngine
 from app.api.schemas import (
     MatchStateResponse, BallRequest, BallResultResponse,
-    PlayerStateBrief, BowlerStateBrief, TossResultResponse, StartMatchRequest
+    PlayerStateBrief, BowlerStateBrief, TossResultResponse, StartMatchRequest,
+    AvailableBowlerResponse, AvailableBowlersResponse, SelectBowlerRequest
 )
 
 # Store toss results for pending matches
@@ -115,7 +116,6 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
             sixes=s_inn.sixes if s_inn else 0,
             is_out=s_inn.is_out if s_inn else False,
             is_settled=s_state.is_settled if s_state else False,
-            is_nervous=s_state.is_nervous if s_state else False,
             is_on_fire=s_state.is_on_fire if s_state else False
         )
 
@@ -132,7 +132,6 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
             sixes=ns_inn.sixes if ns_inn else 0,
             is_out=ns_inn.is_out if ns_inn else False,
             is_settled=ns_state.is_settled if ns_state else False,
-            is_nervous=ns_state.is_nervous if ns_state else False,
             is_on_fire=ns_state.is_on_fire if ns_state else False
         )
         
@@ -181,6 +180,10 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
             winner_name = "Tie"
             margin = "Match tied!"
 
+    # User can change bowler at the start of an over when they are fielding
+    is_user_bowling = not is_user_batting
+    can_change_bowler = innings.balls == 0 and is_user_bowling and status == "in_progress"
+
     return MatchStateResponse(
         innings=1 if engine.current_innings == engine.innings1 else 2,
         runs=innings.total_runs,
@@ -194,7 +197,6 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
         bowler=b_brief,
         pitch_type=innings.context.pitch_type,
         is_pressure=innings.context.is_pressure_cooker,
-        is_collapse=innings.context.is_collapse_mode,
         partnership_runs=innings.context.partnership_runs,
         this_over=[_get_outcome_string(b) for b in innings.this_over],
         last_ball_commentary=last_ball.commentary if last_ball else None,
@@ -207,7 +209,8 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
         bowling_team_name=bowling_team.short_name if bowling_team else "",
         is_user_batting=is_user_batting,
         user_team_name=user_team.short_name if user_team else "",
-        innings_just_changed=innings_just_changed
+        innings_just_changed=innings_just_changed,
+        can_change_bowler=can_change_bowler
     )
 
 def _get_outcome_string(outcome: BallOutcome) -> str:
@@ -422,11 +425,6 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
         if len(b_state.recent_outcomes) >= 3:
             recent_3 = b_state.recent_outcomes[-3:]
             b_state.is_on_fire = recent_3.count("4/6") >= 2
-        
-        if b_state.is_nervous:
-            b_state.nervous_balls_remaining -= 1
-            if b_state.nervous_balls_remaining <= 0:
-                b_state.is_nervous = False
 
     # Update bowler spell
     if bowler.id not in innings.bowler_spells:
@@ -454,12 +452,7 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
         batter_innings.dismissal = outcome.dismissal_type
         batter_innings.bowler = bowler
         spell.wickets += 1
-        
-        innings.context.recent_wickets.append((innings.overs * 6 + innings.balls, random.random()))
-        # Check for collapse: 2 wickets in < 6 balls (stricter)
-        recent = [w for w in innings.context.recent_wickets if (innings.overs * 6 + innings.balls) - w[0] < 6]
-        innings.context.is_collapse_mode = len(recent) >= 2
-        
+
         innings.bowler_states.setdefault(bowler.id, BowlerState(player_id=bowler.id)).has_confidence = True
 
         # Bring in next batter
@@ -468,12 +461,7 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
             next_batter_obj = next(p for p in innings.batting_team if p.id == next_batter_id)
             innings.striker_id = next_batter_id
             innings.batter_innings[next_batter_id] = BatterInnings(player=next_batter_obj)
-            # New batter state - nervous wears off after 3 balls
-            innings.batter_states[next_batter_id] = BatterState(
-                player_id=next_batter_id,
-                is_nervous=innings.context.is_collapse_mode,
-                nervous_balls_remaining=3 if innings.context.is_collapse_mode else 0
-            )
+            innings.batter_states[next_batter_id] = BatterState(player_id=next_batter_id)
             innings.next_batter_index += 1
     elif outcome.runs % 2 == 1:
         innings.striker_id, innings.non_striker_id = innings.non_striker_id, innings.striker_id
@@ -682,3 +670,104 @@ def simulate_innings_interactive(career_id: int, fixture_id: int, db: Session = 
         del active_matches[fixture_id]
 
     return _get_match_state_response(engine, fixture, db, innings_just_changed=innings_just_changed)
+
+
+@router.get("/{career_id}/match/{fixture_id}/available-bowlers")
+def get_available_bowlers(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+    """Get bowlers available for next over"""
+    if fixture_id not in active_matches:
+        raise HTTPException(status_code=404, detail="Active match session not found")
+
+    engine = active_matches[fixture_id]
+    _refresh_engine_players(engine, db)
+    innings = engine.current_innings
+
+    if not innings:
+        raise HTTPException(status_code=400, detail="Match not initialized")
+
+    # Get all potential bowlers (bowlers and all-rounders)
+    bowlers = [p for p in innings.bowling_team if p.role in [PlayerRole.BOWLER, PlayerRole.ALL_ROUNDER]]
+
+    available_bowlers = []
+    for b in bowlers:
+        spell = innings.bowler_spells.get(b.id)
+        overs_bowled = spell.overs if spell else 0
+        wickets = spell.wickets if spell else 0
+        runs_conceded = spell.runs if spell else 0
+        economy = spell.economy if spell else 0.0
+
+        can_bowl = True
+        reason = None
+
+        # Check if bowled max overs
+        if overs_bowled >= 4:
+            can_bowl = False
+            reason = "Bowled maximum 4 overs"
+        # Check if was last bowler
+        elif b.id == innings.last_bowler_id:
+            can_bowl = False
+            reason = "Bowled last over"
+
+        available_bowlers.append(AvailableBowlerResponse(
+            id=b.id,
+            name=b.name,
+            overs_bowled=overs_bowled,
+            wickets=wickets,
+            runs_conceded=runs_conceded,
+            economy=round(economy, 2),
+            can_bowl=can_bowl,
+            reason=reason
+        ))
+
+    return AvailableBowlersResponse(
+        bowlers=available_bowlers,
+        last_bowler_id=innings.last_bowler_id
+    )
+
+
+@router.post("/{career_id}/match/{fixture_id}/select-bowler")
+def select_bowler_manual(career_id: int, fixture_id: int, request: SelectBowlerRequest, db: Session = Depends(get_db)):
+    """Manually select bowler for next over"""
+    if fixture_id not in active_matches:
+        raise HTTPException(status_code=404, detail="Active match session not found")
+
+    engine = active_matches[fixture_id]
+    _refresh_engine_players(engine, db)
+    innings = engine.current_innings
+    fixture = db.query(Fixture).get(fixture_id)
+
+    if not innings:
+        raise HTTPException(status_code=400, detail="Match not initialized")
+
+    # Can only change bowler at start of over
+    if innings.balls != 0:
+        raise HTTPException(status_code=400, detail="Can only change bowler at start of over")
+
+    # Validate bowler exists in bowling team
+    bowler = next((p for p in innings.bowling_team if p.id == request.bowler_id), None)
+    if not bowler:
+        raise HTTPException(status_code=400, detail="Invalid bowler selection")
+
+    # Validate bowler can bowl
+    if bowler.role not in [PlayerRole.BOWLER, PlayerRole.ALL_ROUNDER]:
+        raise HTTPException(status_code=400, detail="Selected player is not a bowler")
+
+    spell = innings.bowler_spells.get(bowler.id)
+    if spell and spell.overs >= 4:
+        raise HTTPException(status_code=400, detail="Bowler has already bowled maximum 4 overs")
+
+    if bowler.id == innings.last_bowler_id:
+        raise HTTPException(status_code=400, detail="Cannot bowl consecutive overs")
+
+    # Set the selected bowler
+    innings.current_bowler_id = bowler.id
+
+    # Initialize bowler spell if needed
+    if bowler.id not in innings.bowler_spells:
+        innings.bowler_spells[bowler.id] = BowlerSpell(player=bowler)
+
+    # Initialize bowler state if needed
+    if bowler.id not in innings.bowler_states:
+        innings.bowler_states[bowler.id] = BowlerState(player_id=bowler.id)
+
+    return _get_match_state_response(engine, fixture, db)

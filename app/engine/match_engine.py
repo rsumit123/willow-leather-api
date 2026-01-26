@@ -9,10 +9,8 @@ from app.models.player import Player, PlayerRole, BowlingType, PlayerTrait
 class MatchContext:
     """Dynamic match context affecting all calculations"""
     pitch_type: str = "flat_deck"  # "green_top", "dust_bowl", "flat_deck"
-    is_collapse_mode: bool = False  # 2 wickets in < 12 balls
     is_pressure_cooker: bool = False  # RRR > 12 or wickets < 3
     partnership_runs: int = 0
-    recent_wickets: list = field(default_factory=list)  # (ball_number, timestamp)
 
 
 @dataclass
@@ -21,9 +19,7 @@ class BatterState:
     player_id: int
     balls_faced: int = 0
     is_settled: bool = False  # > 15 balls
-    is_nervous: bool = False  # entered during collapse
     is_on_fire: bool = False  # 2 boundaries in last 3 balls
-    nervous_balls_remaining: int = 0
     recent_outcomes: list = field(default_factory=list)
 
 
@@ -229,18 +225,58 @@ class MatchEngine:
         """Apply bowler traits to difficulty"""
         if not bowler.traits:
             return 0
-        
+
         traits = json.loads(bowler.traits)
         bonus = 0
-        
+
         if PlayerTrait.CLUTCH.value in traits and context.is_pressure_cooker:
             bonus += 10
         if PlayerTrait.CHOKER.value in traits and context.is_pressure_cooker:
             bonus -= 15
         if PlayerTrait.PARTNERSHIP_BREAKER.value in traits and context.partnership_runs >= 50:
             bonus += 10
-            
+
         return bonus
+
+    def _get_run_rate_adjustment(self, innings: InningsState) -> int:
+        """Apply run rate floor/ceiling to prevent extreme scores (50-260)"""
+        total_balls = innings.overs * 6 + innings.balls
+        if total_balls < 12:  # First 2 overs, no adjustment
+            return 0
+
+        current_rr = innings.total_runs / (total_balls / 6) if total_balls > 0 else 0
+
+        # Floor: 3.0 RR (60 runs in 20 overs) - help struggling batting
+        # Progressive boost - the further below target, the stronger the boost
+        if current_rr < 3.5 and innings.wickets < 8:
+            deficit = 3.5 - current_rr
+            return min(30, int(deficit * 12))  # Strong boost, capped at 30
+
+        # Ceiling: 11 RR (220 runs in 20 overs) - start slowing down early
+        # Progressive penalty - the further above target, the stronger the penalty
+        if current_rr > 11:
+            excess = current_rr - 11
+            return max(-40, -int(excess * 10))  # Very strong penalty, capped at -40
+
+        return 0
+
+    def _get_wicket_protection(self, innings: InningsState) -> int:
+        """Reduce wicket probability for losing teams and late-innings all-outs"""
+        adjustment = 0
+
+        # Protect struggling teams: if runs < 60 and low run rate
+        if innings.total_runs < 60 and innings.wickets < 6:
+            adjustment += 15  # Strong boost to reduce wicket chance
+
+        # Extra protection when nearly all out early
+        if innings.wickets >= 5 and innings.overs < 10:
+            adjustment += 18  # Very strong protection
+
+        # Wicket cap (soft): if wickets >= 7 before over 12, reduce wicket probability
+        if innings.wickets >= 7 and innings.overs < 12:
+            adjustment += 25  # Massive boost to prevent early all-outs
+
+        return adjustment
 
     def calculate_ball_outcome(
         self,
@@ -284,17 +320,30 @@ class MatchEngine:
         batting_roll = batting_base + random.randint(0, batting_variable)
         batting_roll += self._apply_batter_traits(batter, context, batter_state)
 
+        # Apply run rate governors to keep scores in 50-260 range
+        batting_roll += self._get_run_rate_adjustment(innings_state)
+
+        # Apply wicket protection for struggling teams
+        batting_roll += self._get_wicket_protection(innings_state)
+
         final_difficulty = bowling_difficulty
 
         # Step 3: Compare & Resolve
         margin = batting_roll - final_difficulty
 
+        # Dynamic boundary threshold based on run rate
+        current_rr = innings_state.run_rate
+        boundary_threshold = 18  # Base threshold (increased from 17)
+        if current_rr > 12:
+            boundary_threshold = 22  # Harder to hit boundaries when scoring fast
+
         outcome = BallOutcome()
 
         if margin >= 0:
             # Batsman Wins - good shots and boundaries
-            if margin >= 17 or (aggression == "attack" and margin >= 10):
-                # Boundary - moderate threshold for realistic T20 scoring
+            attack_boundary_threshold = boundary_threshold - 8  # Lower threshold in attack mode
+            if margin >= boundary_threshold or (aggression == "attack" and margin >= attack_boundary_threshold):
+                # Boundary - threshold adjusted based on run rate
                 is_six = random.random() < (batter.power / 170)
                 outcome.runs = 6 if is_six else 4
                 outcome.is_boundary = True
@@ -310,14 +359,14 @@ class MatchEngine:
             # Bowler Wins - calibrated for ~3-5% wicket rate per ball
             margin_abs = abs(margin)
 
-            if margin_abs >= 34:
+            if margin_abs >= 38:  # Increased from 34 for fewer clean wickets
                 # Clean Wicket - batter completely beaten
                 outcome.is_wicket = True
                 outcome.dismissal_type = random.choice(["bowled", "lbw"])
                 outcome.commentary = f"WICKET! {bowler.name} {'cleans him up' if outcome.dismissal_type == 'bowled' else 'traps him in front'}!"
-            elif margin_abs >= 20:
-                # Edge / Catch Chance - 28% catch success
-                if random.random() < 0.28:
+            elif margin_abs >= 22:  # Edge zone now -22 to -38 (was -20 to -34)
+                # Edge / Catch Chance - 25% catch success (reduced from 28%)
+                if random.random() < 0.25:
                     outcome.is_wicket = True
                     outcome.dismissal_type = random.choice(["caught", "caught_behind"])
                     outcome.commentary = f"OUT! {batter.name} edges it to {'the keeper' if outcome.dismissal_type == 'caught_behind' else 'a fielder'}!"
@@ -328,7 +377,7 @@ class MatchEngine:
                         outcome.commentary = f"CHANCE! But the catch goes down!"
                     else:
                         outcome.commentary = f"{batter.name} is beaten but survives!"
-            elif margin_abs >= 10:
+            elif margin_abs >= 12:  # Increased from 10
                 # Beaten but survives - mix of dots and singles
                 outcome.runs = random.choice([0, 0, 1, 1, 1])
                 outcome.commentary = f"{batter.name} is beaten but survives!" if outcome.runs == 0 else f"Pushed into a gap for a single!"
@@ -480,11 +529,6 @@ class MatchEngine:
                 b_state.is_settled = b_state.balls_faced > 15
                 b_state.recent_outcomes.append(outcome)
 
-                # Nervous state wears off after facing a few balls
-                if b_state.is_nervous and b_state.nervous_balls_remaining > 0:
-                    b_state.nervous_balls_remaining -= 1
-                    if b_state.nervous_balls_remaining <= 0:
-                        b_state.is_nervous = False
 
             # Update bowler spell
             spell = innings.bowler_spells[bowler.id]
@@ -521,12 +565,7 @@ class MatchEngine:
 
                     spell.wickets += 1
 
-                    # Update context and bowler state
-                    innings.context.recent_wickets.append((innings.overs * 6 + innings.balls, random.random()))
-                    # Check for collapse: 2 wickets in < 6 balls (stricter than before)
-                    recent = [w for w in innings.context.recent_wickets if (innings.overs * 6 + innings.balls) - w[0] < 6]
-                    innings.context.is_collapse_mode = len(recent) >= 2
-
+                    # Update bowler confidence
                     innings.bowler_states[bowler.id].has_confidence = True
 
                     # Bring in next batter
@@ -536,12 +575,8 @@ class MatchEngine:
                         innings.striker_id = next_batter_id
                         innings.batter_innings[next_batter_id] = BatterInnings(player=next_batter)
 
-                        # New batter state - nervous wears off after 3 balls (reduced from 6)
-                        innings.batter_states[next_batter_id] = BatterState(
-                            player_id=next_batter_id,
-                            is_nervous=innings.context.is_collapse_mode,
-                            nervous_balls_remaining=3 if innings.context.is_collapse_mode else 0
-                        )
+                        # New batter state
+                        innings.batter_states[next_batter_id] = BatterState(player_id=next_batter_id)
 
                         innings.next_batter_index += 1
 
