@@ -483,9 +483,12 @@ class MatchEngine:
         balls_bowled = 0
         wickets_this_over = 0  # Track wickets to prevent unrealistic collapses
 
-        # Select bowler
-        bowler = self.select_bowler(innings)
-        innings.current_bowler_id = bowler.id
+        # Use existing bowler selection if set (user selected), otherwise auto-select
+        if innings.current_bowler_id:
+            bowler = next(p for p in innings.bowling_team if p.id == innings.current_bowler_id)
+        else:
+            bowler = self.select_bowler(innings)
+            innings.current_bowler_id = bowler.id
 
         # Initialize states if needed
         if bowler.id not in innings.bowler_states:
@@ -590,14 +593,17 @@ class MatchEngine:
                 spell.overs += 1
                 spell.balls = 0
                 innings.last_bowler_id = bowler.id
-                
+
+                # Reset current bowler so next over requires selection
+                innings.current_bowler_id = None
+
                 # Update bowler state
                 innings.bowler_states[bowler.id].consecutive_overs += 1
                 innings.bowler_states[bowler.id].is_tired = innings.bowler_states[bowler.id].consecutive_overs > 4
-                
+
                 # Reset other bowlers consecutive overs if they didn't bowl this over
                 # Actually, only reset if they were rested.
-                
+
                 # Rotate strike at end of over
                 innings.striker_id, innings.non_striker_id = innings.non_striker_id, innings.striker_id
                 break
