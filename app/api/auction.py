@@ -547,7 +547,8 @@ def skip_category(career_id: int, category: str, db: Session = Depends(get_db)):
 
 @router.post("/{career_id}/quick-pass", response_model=AuctionPlayerResult)
 def quick_pass_player(career_id: int, db: Session = Depends(get_db)):
-    """Quick pass - complete current player's bidding with AI-only competition instantly."""
+    """Quick pass - complete current player's bidding with AI-only competition instantly.
+    User's team is excluded from bidding since they chose to pass."""
     career, season, auction = get_current_auction(career_id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
@@ -565,8 +566,12 @@ def quick_pass_player(career_id: int, db: Session = Depends(get_db)):
     if not player_entry:
         raise HTTPException(status_code=404, detail="Player entry not found")
 
-    # Quick pass with competitive AI bidding
-    result = engine.quick_pass_player(player_entry)
+    # Get user's team ID to exclude them from bidding
+    user_team = db.query(Team).filter_by(career_id=career_id, is_user_team=True).first()
+    user_team_id = user_team.id if user_team else None
+
+    # Quick pass with competitive AI bidding, excluding user's team
+    result = engine.quick_pass_player(player_entry, exclude_team_id=user_team_id)
 
     return AuctionPlayerResult(
         player_id=result.player.id,

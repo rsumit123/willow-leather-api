@@ -29,8 +29,17 @@ class PlayingXIValidator:
         bowler_count = sum(1 for p in players if p.role == PlayerRole.BOWLER)
         ar_count = sum(1 for p in players if p.role == PlayerRole.ALL_ROUNDER)
 
-        if not (bowler_count >= 5 or (bowler_count >= 4 and ar_count >= 1)):
-            errors.append(f"Need 5 bowlers OR 4 bowlers + 1 all-rounder. Got {bowler_count} bowlers, {ar_count} all-rounders")
+        # Valid bowling combinations:
+        # - 5+ bowlers
+        # - 4 bowlers + 1+ all-rounder
+        # - 3 bowlers + 2+ all-rounders
+        valid_bowling = (
+            bowler_count >= 5 or
+            (bowler_count >= 4 and ar_count >= 1) or
+            (bowler_count >= 3 and ar_count >= 2)
+        )
+        if not valid_bowling:
+            errors.append(f"Need 5 bowlers, OR 4 bowlers + 1 all-rounder, OR 3 bowlers + 2 all-rounders. Got {bowler_count} bowlers, {ar_count} all-rounders")
 
         return {
             "valid": len(errors) == 0,

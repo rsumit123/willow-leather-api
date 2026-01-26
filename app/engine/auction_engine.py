@@ -662,12 +662,15 @@ class AuctionEngine:
 
         return results
 
-    def quick_pass_player(self, player_entry: AuctionPlayerEntry) -> BidResult:
+    def quick_pass_player(self, player_entry: AuctionPlayerEntry, exclude_team_id: int = None) -> BidResult:
         """
         Quick pass - complete current player's bidding with AI-only competition instantly.
+
+        Args:
+            exclude_team_id: Team ID to exclude from bidding (user's team when they pass)
         """
-        # Run competitive AI bidding
-        self.run_competitive_ai_bidding(player_entry)
+        # Run competitive AI bidding, excluding user's team
+        self.run_competitive_ai_bidding(player_entry, exclude_team_id=exclude_team_id)
 
         # Finalize and return result
         return self.finalize_player(player_entry)
