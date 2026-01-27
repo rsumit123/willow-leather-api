@@ -487,7 +487,13 @@ def start_match(
         raise HTTPException(status_code=404, detail="Fixture not found")
 
     if fixture.status == FixtureStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail="Match already completed")
+        raise HTTPException(status_code=400, detail=f"Match already completed. Result: {fixture.result_summary or 'Unknown'}")
+
+    # If match was in progress but server restarted (lost active state), allow restart
+    if fixture.status == FixtureStatus.IN_PROGRESS and fixture_id not in active_matches:
+        # Reset to scheduled so we can start fresh
+        fixture.status = FixtureStatus.SCHEDULED
+        db.commit()
 
     career = db.query(Career).get(career_id)
     if not career:
@@ -603,11 +609,22 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
         else:
             raise HTTPException(status_code=400, detail="Match already complete")
 
-    # Start of over initialization
+    # Start of over initialization - auto-select bowler only if AI is bowling
     if innings.balls == 0 and not innings.current_bowler_id:
-        bowler_obj = engine.select_bowler(innings)
-        innings.current_bowler_id = bowler_obj.id
-        innings.this_over = []
+        # Check if user is bowling (user should select manually)
+        user_team_id = getattr(engine, 'user_team_id', None)
+        batting_team_id = innings.batting_team_id
+        is_user_batting = batting_team_id == user_team_id if user_team_id else False
+        is_user_bowling = not is_user_batting
+
+        if is_user_bowling:
+            # User must select bowler manually
+            raise HTTPException(status_code=400, detail="Please select a bowler first")
+        else:
+            # AI bowling - auto-select
+            bowler_obj = engine.select_bowler(innings)
+            innings.current_bowler_id = bowler_obj.id
+            innings.this_over = []
 
     # Get striker and bowler
     striker = next(p for p in innings.batting_team if p.id == innings.striker_id)
