@@ -142,7 +142,8 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
             sixes=s_inn.sixes if s_inn else 0,
             is_out=s_inn.is_out if s_inn else False,
             is_settled=s_state.is_settled if s_state else False,
-            is_on_fire=s_state.is_on_fire if s_state else False
+            is_on_fire=s_state.is_on_fire if s_state else False,
+            traits=_parse_traits(striker.traits)
         )
 
     ns_brief = None
@@ -158,9 +159,10 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
             sixes=ns_inn.sixes if ns_inn else 0,
             is_out=ns_inn.is_out if ns_inn else False,
             is_settled=ns_state.is_settled if ns_state else False,
-            is_on_fire=ns_state.is_on_fire if ns_state else False
+            is_on_fire=ns_state.is_on_fire if ns_state else False,
+            traits=_parse_traits(non_striker.traits)
         )
-        
+
     b_brief = None
     if bowler:
         b_spell = innings.bowler_spells.get(bowler.id)
@@ -173,7 +175,8 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
             runs=b_spell.runs if b_spell else 0,
             wickets=b_spell.wickets if b_spell else 0,
             is_tired=b_state.is_tired if b_state else False,
-            has_confidence=b_state.has_confidence if b_state else False
+            has_confidence=b_state.has_confidence if b_state else False,
+            traits=_parse_traits(bowler.traits)
         )
 
     last_ball = innings.this_over[-1] if innings.this_over else None
@@ -980,7 +983,8 @@ def get_available_bowlers(career_id: int, fixture_id: int, db: Session = Depends
             runs_conceded=runs_conceded,
             economy=round(economy, 2),
             can_bowl=can_bowl,
-            reason=reason
+            reason=reason,
+            traits=_parse_traits(b.traits)
         ))
 
     return AvailableBowlersResponse(

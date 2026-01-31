@@ -287,6 +287,7 @@ class PlayerStateBrief(BaseModel):
     is_out: bool = False
     is_settled: bool = False
     is_on_fire: bool = False
+    traits: list[str] = []
 
 
 class BowlerStateBrief(BaseModel):
@@ -298,6 +299,7 @@ class BowlerStateBrief(BaseModel):
     wickets: int = 0
     is_tired: bool = False
     has_confidence: bool = False
+    traits: list[str] = []
 
 
 class MatchStateResponse(BaseModel):
@@ -351,6 +353,7 @@ class AvailableBowlerResponse(BaseModel):
     economy: float
     can_bowl: bool
     reason: Optional[str] = None
+    traits: list[str] = []
 
 
 class AvailableBowlersResponse(BaseModel):
