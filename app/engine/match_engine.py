@@ -305,6 +305,17 @@ class MatchEngine:
         # Attack: Higher variance (more big shots possible, but also more wickets)
         skill_multiplier = {"defend": 0.7, "balanced": 1.0, "attack": 1.4}[aggression]
 
+        # Apply batting intent modifier - affects variance based on player's natural style
+        # Anchors are naturally defensive, power hitters are naturally aggressive
+        intent_multipliers = {
+            "anchor": 0.7,           # Low variance - consistent run accumulation
+            "accumulator": 0.9,      # Slightly below average variance
+            "aggressive": 1.15,      # Above average variance
+            "power_hitter": 1.35,    # High variance - boom or bust
+        }
+        batter_intent = getattr(batter, 'batting_intent', 'accumulator')
+        skill_multiplier *= intent_multipliers.get(batter_intent, 1.0)
+
         # Base bonus for defend (safer), penalty for attack (riskier)
         base_adjustment = {"defend": 8, "balanced": 0, "attack": -5}[aggression]
 

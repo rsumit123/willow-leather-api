@@ -34,6 +34,13 @@ class BattingStyle(enum.Enum):
     LEFT_HANDED = "left_handed"
 
 
+class BattingIntent(enum.Enum):
+    ANCHOR = "anchor"                 # Low variance, consistent 120-130 SR
+    ACCUMULATOR = "accumulator"       # Moderate variance, 130-140 SR
+    AGGRESSIVE = "aggressive"         # High variance, 140-160 SR
+    POWER_HITTER = "power_hitter"     # Very high variance, boom or bust
+
+
 class Player(Base):
     __tablename__ = "players"
 
@@ -71,6 +78,7 @@ class Player(Base):
     # Current state
     form: Mapped[float] = mapped_column(Float, default=1.0)  # 0.7-1.3 multiplier
     traits: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array
+    batting_intent: Mapped[str] = mapped_column(String(20), default=BattingIntent.ACCUMULATOR.value)  # Batting style intent
 
     # Team relationship
     team_id: Mapped[Optional[int]] = mapped_column(ForeignKey("teams.id"), nullable=True)

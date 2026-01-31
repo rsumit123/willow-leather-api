@@ -1,7 +1,7 @@
 import random
 import json
 from faker import Faker
-from app.models.player import Player, PlayerRole, BowlingType, BattingStyle, PlayerTrait
+from app.models.player import Player, PlayerRole, BowlingType, BattingStyle, PlayerTrait, BattingIntent
 from app.database import get_session
 
 # Initialize Faker instances - use en_US as fallback for unavailable locales
@@ -90,6 +90,32 @@ class PlayerGenerator:
         """Generate an attribute value with some variance"""
         value = base + random.randint(-variance, variance)
         return max(minimum, min(100, value))  # Clamp between minimum-100
+
+    @staticmethod
+    def _determine_batting_intent(power: int, technique: int, role: PlayerRole) -> BattingIntent:
+        """
+        Determine batting intent based on power vs technique balance.
+        Power hitters have high power, low technique.
+        Anchors have high technique, moderate power.
+        """
+        # Bowlers are usually accumulators (they just try to survive)
+        if role == PlayerRole.BOWLER:
+            return BattingIntent.ACCUMULATOR
+
+        # Power hitters: high power, lower technique
+        if power >= 75 and technique < 60:
+            return BattingIntent.POWER_HITTER
+
+        # Aggressive: good power
+        if power >= 65:
+            return BattingIntent.AGGRESSIVE
+
+        # Anchor: high technique, willing to play defensively
+        if technique >= 70:
+            return BattingIntent.ANCHOR
+
+        # Default: accumulator
+        return BattingIntent.ACCUMULATOR
 
     @staticmethod
     def _ensure_minimum_ovr(player: Player, min_ovr: int = 55) -> Player:
@@ -226,6 +252,9 @@ class PlayerGenerator:
         
         traits_json = json.dumps([t.value for t in traits])
 
+        # Determine batting intent based on power vs technique
+        batting_intent = cls._determine_batting_intent(power, technique, role)
+
         # Base price based on tier and role
         base_prices = {
             "elite": random.randint(15000000, 25000000),   # 1.5-2.5 crore
@@ -258,6 +287,7 @@ class PlayerGenerator:
             consistency=consistency,
             form=round(random.uniform(0.9, 1.1), 2),
             traits=traits_json,
+            batting_intent=batting_intent.value,
             base_price=base_price,
         )
 

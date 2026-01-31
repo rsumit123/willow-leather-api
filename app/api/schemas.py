@@ -2,7 +2,7 @@
 Pydantic schemas for API request/response models
 """
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from enum import Enum
 
@@ -64,6 +64,9 @@ class PlayerBase(BaseModel):
     batting: int
     bowling: int
     overall_rating: int
+    power: int = 50  # Six-hitting ability (1-100)
+    traits: List[str] = []  # Player traits like "clutch", "finisher"
+    batting_intent: str = "accumulator"  # anchor, accumulator, aggressive, power_hitter
 
 
 class PlayerResponse(PlayerBase):
@@ -88,6 +91,11 @@ class PlayerBrief(BaseModel):
     base_price: int
     batting_style: str
     bowling_type: str
+    batting: int = 50  # Batting skill for display
+    bowling: int = 50  # Bowling skill for display
+    power: int = 50  # Power for batters
+    traits: List[str] = []  # Player traits
+    batting_intent: str = "accumulator"  # Batting intent
 
     class Config:
         from_attributes = True

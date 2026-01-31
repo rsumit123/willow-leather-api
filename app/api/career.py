@@ -1,9 +1,10 @@
 """
 Career management API endpoints
 """
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from app.database import get_session
 from app.models.career import Career, Season, CareerStatus, SeasonPhase
@@ -20,6 +21,16 @@ from app.api.schemas import (
 )
 
 router = APIRouter(prefix="/career", tags=["Career"])
+
+
+def parse_traits(traits_json: Optional[str]) -> List[str]:
+    """Parse traits JSON string to list of trait strings"""
+    if not traits_json:
+        return []
+    try:
+        return json.loads(traits_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
 def get_db():
@@ -189,6 +200,9 @@ def get_team_squad(career_id: int, team_id: int, db: Session = Depends(get_db)):
             form=p.form,
             batting_style=p.batting_style.value,
             bowling_type=p.bowling_type.value,
+            power=p.power,
+            traits=parse_traits(p.traits),
+            batting_intent=getattr(p, 'batting_intent', 'accumulator'),
         ))
 
     return SquadResponse(
@@ -239,6 +253,9 @@ def get_playing_xi(career_id: int, db: Session = Depends(get_db)):
             form=p.form,
             batting_style=p.batting_style.value,
             bowling_type=p.bowling_type.value,
+            power=p.power,
+            traits=parse_traits(p.traits),
+            batting_intent=getattr(p, 'batting_intent', 'accumulator'),
             position=entry.position,
         ))
 
@@ -342,6 +359,9 @@ def set_playing_xi(career_id: int, request: PlayingXIRequest, db: Session = Depe
             form=p.form,
             batting_style=p.batting_style.value,
             bowling_type=p.bowling_type.value,
+            power=p.power,
+            traits=parse_traits(p.traits),
+            batting_intent=getattr(p, 'batting_intent', 'accumulator'),
             position=entry.position,
         ))
 

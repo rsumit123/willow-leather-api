@@ -1,9 +1,10 @@
 """
 Auction API endpoints
 """
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from app.database import get_session
 from app.models.career import Career, Season, CareerStatus, SeasonPhase
@@ -22,6 +23,35 @@ from app.api.schemas import (
 )
 
 router = APIRouter(prefix="/auction", tags=["Auction"])
+
+
+def parse_traits(traits_json: Optional[str]) -> List[str]:
+    """Parse traits JSON string to list of trait strings"""
+    if not traits_json:
+        return []
+    try:
+        return json.loads(traits_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def player_to_brief(player: Player) -> PlayerBrief:
+    """Convert a Player model to PlayerBrief with all fields"""
+    return PlayerBrief(
+        id=player.id,
+        name=player.name,
+        role=player.role.value,
+        overall_rating=player.overall_rating,
+        is_overseas=player.is_overseas,
+        base_price=player.base_price,
+        batting_style=player.batting_style.value,
+        bowling_type=player.bowling_type.value,
+        batting=player.batting,
+        bowling=player.bowling,
+        power=player.power,
+        traits=parse_traits(player.traits),
+        batting_intent=getattr(player, 'batting_intent', 'accumulator'),
+    )
 
 
 def get_db():
@@ -91,16 +121,7 @@ def get_auction_state(career_id: int, db: Session = Depends(get_db)):
     if auction.current_player_id:
         player = db.query(Player).filter_by(id=auction.current_player_id).first()
         if player:
-            current_player = PlayerBrief(
-                id=player.id,
-                name=player.name,
-                role=player.role.value,
-                overall_rating=player.overall_rating,
-                is_overseas=player.is_overseas,
-                base_price=player.base_price,
-                batting_style=player.batting_style.value,
-                bowling_type=player.bowling_type.value,
-            )
+            current_player = player_to_brief(player)
 
     if auction.current_bidder_team_id:
         team = db.query(Team).filter_by(id=auction.current_bidder_team_id).first()
@@ -187,16 +208,7 @@ def next_player(career_id: int, db: Session = Depends(get_db)):
 
     return NextPlayerResponse(
         auction_finished=False,
-        player=PlayerBrief(
-            id=player.id,
-            name=player.name,
-            role=player.role.value,
-            overall_rating=player.overall_rating,
-            is_overseas=player.is_overseas,
-            base_price=player.base_price,
-            batting_style=player.batting_style.value,
-            bowling_type=player.bowling_type.value,
-        ),
+        player=player_to_brief(player),
         starting_bid=player.base_price,
         category=new_category,
         previous_category=previous_category,
@@ -438,16 +450,7 @@ def get_remaining_players(career_id: int, db: Session = Depends(get_db)):
         players = []
         for entry in entries:
             player = entry.player
-            players.append(PlayerBrief(
-                id=player.id,
-                name=player.name,
-                role=player.role.value,
-                overall_rating=player.overall_rating,
-                is_overseas=player.is_overseas,
-                base_price=player.base_price,
-                batting_style=player.batting_style.value,
-                bowling_type=player.bowling_type.value,
-            ))
+            players.append(player_to_brief(player))
         categories[category] = players
         counts[category] = len(players)
 
