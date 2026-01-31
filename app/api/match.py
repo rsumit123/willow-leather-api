@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import random
+import json
 
 from app.database import get_session
 from app.models.career import Career, Fixture, FixtureStatus, FixtureType, Season, SeasonPhase, CareerStatus
@@ -34,6 +35,16 @@ active_matches: Dict[int, MatchEngine] = {}
 # Store completed match results temporarily so they can be fetched after match ends
 # Key: fixture_id, Value: dict with engine copy and winner info
 completed_match_results: Dict[int, dict] = {}
+
+
+def _parse_traits(traits_json: Optional[str]) -> List[str]:
+    """Parse traits JSON string to list of trait strings"""
+    if not traits_json:
+        return []
+    try:
+        return json.loads(traits_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
 def _store_completed_match(fixture_id: int, engine: MatchEngine, winner_id: Optional[int], margin: str):
@@ -286,7 +297,8 @@ def _build_innings_scorecard(innings: InningsState, batting_team: Team, bowling_
                 strike_rate=round(bi.strike_rate, 2),
                 is_out=bi.is_out,
                 dismissal=_format_dismissal(bi),
-                batting_position=position + 1
+                batting_position=position + 1,
+                traits=_parse_traits(bi.player.traits)
             ))
 
     # Calculate extras from bowler spells

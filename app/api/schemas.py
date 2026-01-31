@@ -443,6 +443,7 @@ class BatterScorecardEntry(BaseModel):
     is_out: bool
     dismissal: str  # "c Fielder b Bowler", "not out", "b Bowler"
     batting_position: int
+    traits: list[str] = []
 
 
 class BowlerScorecardEntry(BaseModel):
