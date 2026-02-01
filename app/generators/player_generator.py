@@ -53,7 +53,7 @@ class PlayerGenerator:
         ],
     }
 
-    # Trait pools by role
+    # Trait pools by role (kept for reference, weights below control distribution)
     TRAIT_POOLS = {
         PlayerRole.BATSMAN: [
             PlayerTrait.CLUTCH,
@@ -78,6 +78,73 @@ class PlayerGenerator:
         ],
     }
 
+    # === BALANCED DISTRIBUTION CONSTANTS ===
+
+    # Batting Intent Target Distribution (for non-bowlers)
+    # ACCUMULATOR: 50% - steady players, most common
+    # ANCHOR: 25% - valuable stabilizers
+    # AGGRESSIVE: 18% - impact players
+    # POWER_HITTER: 7% - rare match-winners
+    BATTING_INTENT_WEIGHTS = {
+        BattingIntent.ACCUMULATOR: 50,
+        BattingIntent.ANCHOR: 25,
+        BattingIntent.AGGRESSIVE: 18,
+        BattingIntent.POWER_HITTER: 7,
+    }
+
+    # Trait count weights by tier [0 traits, 1 trait, 2 traits]
+    # Elite players more likely to have positive traits
+    # Solid players mostly "normal"
+    # Reduced 2-trait probability across all tiers
+    TRAIT_COUNT_WEIGHTS = {
+        "elite": [35, 50, 15],   # 65% have at least one trait
+        "star": [50, 40, 10],    # 50% have at least one trait
+        "good": [60, 33, 7],     # 40% have at least one trait
+        "solid": [70, 27, 3],    # 30% have at least one trait
+    }
+
+    # Trait weights by role (relative weights for selection)
+    # Lower weights = rarer traits (more special)
+    # Higher weights = more common traits
+    TRAIT_WEIGHTS = {
+        PlayerRole.BATSMAN: {
+            PlayerTrait.CLUTCH: 8,       # Ultra rare - performs under pressure
+            PlayerTrait.FINISHER: 10,    # Very rare - death overs specialist
+            PlayerTrait.CHOKER: 35,      # Negative trait, more common
+        },
+        PlayerRole.BOWLER: {
+            PlayerTrait.CLUTCH: 8,       # Ultra rare
+            PlayerTrait.PARTNERSHIP_BREAKER: 15,  # Uncommon - breaks stands
+            PlayerTrait.CHOKER: 35,      # Negative trait
+        },
+        PlayerRole.ALL_ROUNDER: {
+            PlayerTrait.CLUTCH: 8,       # Ultra rare
+            PlayerTrait.FINISHER: 10,    # Very rare
+            PlayerTrait.PARTNERSHIP_BREAKER: 12,  # Uncommon
+            PlayerTrait.CHOKER: 30,      # Negative trait
+        },
+        PlayerRole.WICKET_KEEPER: {
+            PlayerTrait.CLUTCH: 8,       # Ultra rare
+            PlayerTrait.BUCKET_HANDS: 28,  # Common for keepers
+            PlayerTrait.CHOKER: 30,      # Negative trait
+        },
+    }
+
+    # Reduce CHOKER chance for higher tier players (elite players handle pressure)
+    # These are multipliers applied to CHOKER weight
+    CHOKER_REDUCTION = {
+        "elite": 0.10,  # 90% reduction - elite players rarely choke
+        "star": 0.35,   # 65% reduction
+        "good": 0.65,   # 35% reduction
+        "solid": 1.0,   # No reduction - newer players more prone
+    }
+
+    # Minimum stats required for certain intents (validation)
+    INTENT_REQUIREMENTS = {
+        BattingIntent.POWER_HITTER: {"power": 55},  # Need decent power
+        BattingIntent.ANCHOR: {"technique": 45},     # Need some technique
+    }
+
     @staticmethod
     def _weighted_choice(choices: list[tuple]) -> any:
         """Select from weighted choices [(item, weight), ...]"""
@@ -91,31 +158,104 @@ class PlayerGenerator:
         value = base + random.randint(-variance, variance)
         return max(minimum, min(100, value))  # Clamp between minimum-100
 
-    @staticmethod
-    def _determine_batting_intent(power: int, technique: int, role: PlayerRole) -> BattingIntent:
+    @classmethod
+    def _determine_batting_intent(cls, power: int, technique: int, role: PlayerRole) -> BattingIntent:
         """
-        Determine batting intent based on power vs technique balance.
-        Power hitters have high power, low technique.
-        Anchors have high technique, moderate power.
+        Determine batting intent with controlled distribution.
+        Uses weighted random selection to ensure proper rarity of special intents.
+
+        Distribution (non-bowlers):
+        - ACCUMULATOR: 50% - steady, reliable players
+        - ANCHOR: 25% - stabilizers who build innings
+        - AGGRESSIVE: 18% - impact players
+        - POWER_HITTER: 7% - rare match-winners
         """
-        # Bowlers are usually accumulators (they just try to survive)
+        # Bowlers are always accumulators (they just try to survive)
         if role == PlayerRole.BOWLER:
             return BattingIntent.ACCUMULATOR
 
-        # Power hitters: high power, lower technique
-        if power >= 75 and technique < 60:
-            return BattingIntent.POWER_HITTER
+        # Use weighted random selection for controlled distribution
+        intents = list(cls.BATTING_INTENT_WEIGHTS.keys())
+        weights = list(cls.BATTING_INTENT_WEIGHTS.values())
+        selected = random.choices(intents, weights=weights)[0]
 
-        # Aggressive: good power
-        if power >= 65:
-            return BattingIntent.AGGRESSIVE
+        # Validate: Power hitters need minimum power to be credible
+        if selected == BattingIntent.POWER_HITTER:
+            min_power = cls.INTENT_REQUIREMENTS.get(BattingIntent.POWER_HITTER, {}).get("power", 55)
+            if power < min_power:
+                # Downgrade to aggressive if not powerful enough
+                return BattingIntent.AGGRESSIVE
 
-        # Anchor: high technique, willing to play defensively
-        if technique >= 70:
-            return BattingIntent.ANCHOR
+        # Validate: Anchors need minimum technique
+        if selected == BattingIntent.ANCHOR:
+            min_technique = cls.INTENT_REQUIREMENTS.get(BattingIntent.ANCHOR, {}).get("technique", 45)
+            if technique < min_technique:
+                # Downgrade to accumulator if no technique
+                return BattingIntent.ACCUMULATOR
 
-        # Default: accumulator
-        return BattingIntent.ACCUMULATOR
+        return selected
+
+    @classmethod
+    def _assign_traits(cls, role: PlayerRole, tier: str) -> list[PlayerTrait]:
+        """
+        Assign traits with weighted probability based on role and tier.
+
+        - Higher tier players more likely to have positive traits
+        - CHOKER trait less likely for elite/star players
+        - Each role has specific trait weights
+
+        Returns list of 0-2 traits.
+        """
+        # Determine number of traits based on tier
+        count_weights = cls.TRAIT_COUNT_WEIGHTS.get(tier, [55, 35, 10])
+        num_traits = random.choices([0, 1, 2], weights=count_weights)[0]
+
+        if num_traits == 0:
+            return []
+
+        # Get trait weights for this role
+        role_weights = cls.TRAIT_WEIGHTS.get(role, {})
+        if not role_weights:
+            return []
+
+        # Apply CHOKER reduction for higher tier players
+        choker_mult = cls.CHOKER_REDUCTION.get(tier, 1.0)
+
+        # Build weighted trait pool
+        trait_pool = []
+        weight_pool = []
+
+        for trait, weight in role_weights.items():
+            # Reduce CHOKER chance for better players
+            if trait == PlayerTrait.CHOKER:
+                weight = int(weight * choker_mult)
+
+            if weight > 0:
+                trait_pool.append(trait)
+                weight_pool.append(weight)
+
+        if not trait_pool:
+            return []
+
+        # Select traits without duplicates
+        traits = []
+        available_traits = list(zip(trait_pool, weight_pool))
+
+        for _ in range(num_traits):
+            if not available_traits:
+                break
+
+            # Select one trait
+            traits_list = [t for t, w in available_traits]
+            weights_list = [w for t, w in available_traits]
+
+            selected = random.choices(traits_list, weights=weights_list)[0]
+            traits.append(selected)
+
+            # Remove selected trait from pool (no duplicates)
+            available_traits = [(t, w) for t, w in available_traits if t != selected]
+
+        return traits
 
     @staticmethod
     def _ensure_minimum_ovr(player: Player, min_ovr: int = 55) -> Player:
@@ -242,14 +382,8 @@ class PlayerGenerator:
         else:  # solid
             age = random.randint(21, 29)
 
-        # Assign 0-2 traits
-        num_traits = random.choices([0, 1, 2], weights=[40, 40, 20])[0]
-        traits = []
-        if num_traits > 0:
-            pool = cls.TRAIT_POOLS.get(role, [])
-            if pool:
-                traits = random.sample(pool, min(num_traits, len(pool)))
-        
+        # Assign 0-2 traits using weighted distribution based on role and tier
+        traits = cls._assign_traits(role, tier)
         traits_json = json.dumps([t.value for t in traits])
 
         # Determine batting intent based on power vs technique
