@@ -172,3 +172,79 @@ class TeamSeasonStats(Base):
 
     def __repr__(self):
         return f"<TeamSeasonStats: {self.wins}W {self.losses}L, NRR: {self.net_run_rate:+.3f}>"
+
+
+class PlayerSeasonStats(Base):
+    """
+    Player statistics for a specific season.
+    Tracks batting, bowling, and fielding stats for leaderboards.
+    """
+    __tablename__ = "player_season_stats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"))
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+
+    # Batting stats
+    matches_batted: Mapped[int] = mapped_column(Integer, default=0)
+    runs: Mapped[int] = mapped_column(Integer, default=0)
+    balls_faced: Mapped[int] = mapped_column(Integer, default=0)
+    fours: Mapped[int] = mapped_column(Integer, default=0)
+    sixes: Mapped[int] = mapped_column(Integer, default=0)
+    highest_score: Mapped[int] = mapped_column(Integer, default=0)
+    not_outs: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Bowling stats
+    matches_bowled: Mapped[int] = mapped_column(Integer, default=0)
+    wickets: Mapped[int] = mapped_column(Integer, default=0)
+    overs_bowled: Mapped[float] = mapped_column(default=0.0)
+    runs_conceded: Mapped[int] = mapped_column(Integer, default=0)
+    best_bowling_wickets: Mapped[int] = mapped_column(Integer, default=0)
+    best_bowling_runs: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Fielding stats
+    catches: Mapped[int] = mapped_column(Integer, default=0)
+    stumpings: Mapped[int] = mapped_column(Integer, default=0)
+    run_outs: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Relationships
+    player: Mapped["Player"] = relationship("Player")
+    team: Mapped["Team"] = relationship("Team")
+
+    @property
+    def batting_average(self) -> float:
+        """Calculate batting average: runs / dismissals"""
+        dismissals = self.matches_batted - self.not_outs
+        if dismissals <= 0:
+            return self.runs if self.runs > 0 else 0.0
+        return round(self.runs / dismissals, 2)
+
+    @property
+    def strike_rate(self) -> float:
+        """Calculate strike rate: (runs / balls) * 100"""
+        if self.balls_faced == 0:
+            return 0.0
+        return round((self.runs / self.balls_faced) * 100, 2)
+
+    @property
+    def bowling_average(self) -> float:
+        """Calculate bowling average: runs conceded / wickets"""
+        if self.wickets == 0:
+            return 0.0
+        return round(self.runs_conceded / self.wickets, 2)
+
+    @property
+    def economy_rate(self) -> float:
+        """Calculate economy rate: runs per over"""
+        if self.overs_bowled == 0:
+            return 0.0
+        return round(self.runs_conceded / self.overs_bowled, 2)
+
+    @property
+    def best_bowling(self) -> str:
+        """Format best bowling figures"""
+        return f"{self.best_bowling_wickets}/{self.best_bowling_runs}"
+
+    def __repr__(self):
+        return f"<PlayerSeasonStats: {self.runs} runs, {self.wickets} wkts>"

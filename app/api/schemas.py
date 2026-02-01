@@ -500,3 +500,79 @@ class MatchCompletionResponse(BaseModel):
     innings1: InningsScorecard
     innings2: InningsScorecard
     man_of_the_match: ManOfTheMatch
+
+
+# Leaderboard Schemas
+class BatterLeaderboardEntry(BaseModel):
+    rank: int
+    player_id: int
+    player_name: str
+    team_id: int
+    team_short_name: str
+    runs: int
+    matches: int
+    innings: int
+    not_outs: int
+    average: float
+    strike_rate: float
+    fours: int
+    sixes: int
+    highest_score: int
+
+    class Config:
+        from_attributes = True
+
+
+class BowlerLeaderboardEntry(BaseModel):
+    rank: int
+    player_id: int
+    player_name: str
+    team_id: int
+    team_short_name: str
+    wickets: int
+    matches: int
+    overs: float
+    runs_conceded: int
+    economy: float
+    average: float
+    best_bowling: str
+
+    class Config:
+        from_attributes = True
+
+
+class SixesLeaderboardEntry(BaseModel):
+    rank: int
+    player_id: int
+    player_name: str
+    team_id: int
+    team_short_name: str
+    sixes: int
+    runs: int
+    matches: int
+
+    class Config:
+        from_attributes = True
+
+
+class CatchesLeaderboardEntry(BaseModel):
+    rank: int
+    player_id: int
+    player_name: str
+    team_id: int
+    team_short_name: str
+    catches: int
+    stumpings: int
+    run_outs: int
+    total_dismissals: int
+    matches: int
+
+    class Config:
+        from_attributes = True
+
+
+class LeaderboardsResponse(BaseModel):
+    orange_cap: List[BatterLeaderboardEntry]
+    purple_cap: List[BowlerLeaderboardEntry]
+    most_sixes: List[SixesLeaderboardEntry]
+    most_catches: List[CatchesLeaderboardEntry]

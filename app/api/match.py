@@ -5,7 +5,7 @@ import random
 import json
 
 from app.database import get_session
-from app.models.career import Career, Fixture, FixtureStatus, FixtureType, Season, SeasonPhase, CareerStatus
+from app.models.career import Career, Fixture, FixtureStatus, FixtureType, Season, SeasonPhase, CareerStatus, PlayerSeasonStats
 from app.models.team import Team
 from app.models.player import Player, PlayerRole
 from app.models.match import Match, MatchStatus
@@ -785,6 +785,110 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
         match_state=_get_match_state_response(engine, fixture, db, innings_just_changed=innings_just_changed)
     )
 
+def _update_player_season_stats(engine: MatchEngine, fixture: Fixture, db: Session):
+    """Update player season stats from match innings data"""
+    season = db.query(Season).get(fixture.season_id)
+
+    # Process both innings
+    for innings in [engine.innings1, engine.innings2]:
+        if not innings:
+            continue
+
+        batting_team_id = innings.batting_team_id
+        bowling_team_id = fixture.team2_id if batting_team_id == fixture.team1_id else fixture.team1_id
+
+        # Update batting stats
+        for player_id, batter_innings in innings.batter_innings.items():
+            player_stats = db.query(PlayerSeasonStats).filter_by(
+                season_id=season.id,
+                player_id=player_id
+            ).first()
+
+            if not player_stats:
+                player_stats = PlayerSeasonStats(
+                    season_id=season.id,
+                    player_id=player_id,
+                    team_id=batting_team_id,
+                    matches_batted=0, runs=0, balls_faced=0, fours=0, sixes=0,
+                    highest_score=0, not_outs=0, matches_bowled=0, wickets=0,
+                    overs_bowled=0.0, runs_conceded=0, best_bowling_wickets=0,
+                    best_bowling_runs=0, catches=0, stumpings=0, run_outs=0
+                )
+                db.add(player_stats)
+
+            player_stats.matches_batted += 1
+            player_stats.runs += batter_innings.runs
+            player_stats.balls_faced += batter_innings.balls
+            player_stats.fours += batter_innings.fours
+            player_stats.sixes += batter_innings.sixes
+
+            if not batter_innings.is_out:
+                player_stats.not_outs += 1
+
+            if batter_innings.runs > player_stats.highest_score:
+                player_stats.highest_score = batter_innings.runs
+
+        # Update bowling stats
+        for player_id, bowler_spell in innings.bowler_spells.items():
+            player_stats = db.query(PlayerSeasonStats).filter_by(
+                season_id=season.id,
+                player_id=player_id
+            ).first()
+
+            if not player_stats:
+                player_stats = PlayerSeasonStats(
+                    season_id=season.id,
+                    player_id=player_id,
+                    team_id=bowling_team_id,
+                    matches_batted=0, runs=0, balls_faced=0, fours=0, sixes=0,
+                    highest_score=0, not_outs=0, matches_bowled=0, wickets=0,
+                    overs_bowled=0.0, runs_conceded=0, best_bowling_wickets=0,
+                    best_bowling_runs=0, catches=0, stumpings=0, run_outs=0
+                )
+                db.add(player_stats)
+
+            player_stats.matches_bowled += 1
+            player_stats.wickets += bowler_spell.wickets
+            player_stats.overs_bowled += bowler_spell.overs + (bowler_spell.balls / 6)
+            player_stats.runs_conceded += bowler_spell.runs
+
+            # Update best bowling figures
+            if (bowler_spell.wickets > player_stats.best_bowling_wickets or
+                (bowler_spell.wickets == player_stats.best_bowling_wickets and
+                 bowler_spell.runs < player_stats.best_bowling_runs)):
+                player_stats.best_bowling_wickets = bowler_spell.wickets
+                player_stats.best_bowling_runs = bowler_spell.runs
+
+        # Update fielding stats from dismissals
+        for player_id, batter_innings in innings.batter_innings.items():
+            if batter_innings.is_out and batter_innings.fielder:
+                fielder_id = batter_innings.fielder.id
+                fielder_stats = db.query(PlayerSeasonStats).filter_by(
+                    season_id=season.id,
+                    player_id=fielder_id
+                ).first()
+
+                if not fielder_stats:
+                    fielder_stats = PlayerSeasonStats(
+                        season_id=season.id,
+                        player_id=fielder_id,
+                        team_id=bowling_team_id,
+                        matches_batted=0, runs=0, balls_faced=0, fours=0, sixes=0,
+                        highest_score=0, not_outs=0, matches_bowled=0, wickets=0,
+                        overs_bowled=0.0, runs_conceded=0, best_bowling_wickets=0,
+                        best_bowling_runs=0, catches=0, stumpings=0, run_outs=0
+                    )
+                    db.add(fielder_stats)
+
+                dismissal = batter_innings.dismissal
+                if dismissal in ["caught", "caught_behind"]:
+                    fielder_stats.catches += 1
+                elif dismissal == "stumped":
+                    fielder_stats.stumpings += 1
+                elif dismissal == "run_out":
+                    fielder_stats.run_outs += 1
+
+
 def _finalize_match_interactive(engine: MatchEngine, fixture: Fixture, db: Session) -> tuple:
     """Finalize match and return (winner_id, margin) tuple"""
     # Determine winner
@@ -829,6 +933,9 @@ def _finalize_match_interactive(engine: MatchEngine, fixture: Fixture, db: Sessi
     }
     batting_first = db.query(Team).get(engine.innings1.batting_team_id)
     engine_season._update_team_stats(fixture.team1, fixture.team2, winner, result_dict, batting_first)
+
+    # Update player season stats for leaderboards
+    _update_player_season_stats(engine, fixture, db)
 
     # Check if league stage is complete - transition to playoffs
     career = db.query(Career).filter_by(id=season.career_id).first()

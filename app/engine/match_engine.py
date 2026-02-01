@@ -306,18 +306,28 @@ class MatchEngine:
         skill_multiplier = {"defend": 0.7, "balanced": 1.0, "attack": 1.4}[aggression]
 
         # Apply batting intent modifier - affects variance based on player's natural style
-        # Anchors are naturally defensive, power hitters are naturally aggressive
+        # Higher variance = more boundaries possible, but also more risk of getting out
         intent_multipliers = {
-            "anchor": 0.7,           # Low variance - consistent run accumulation
-            "accumulator": 0.9,      # Slightly below average variance
+            "anchor": 0.75,          # Low variance - consistent run accumulation
+            "accumulator": 0.95,     # Slightly below average variance
             "aggressive": 1.15,      # Above average variance
-            "power_hitter": 1.35,    # High variance - boom or bust
+            "power_hitter": 1.25,    # High variance - boom or bust
         }
         batter_intent = getattr(batter, 'batting_intent', 'accumulator')
         skill_multiplier *= intent_multipliers.get(batter_intent, 1.0)
 
+        # Intent-based floor adjustment - slight safety net differences
+        # Anchors play percentage cricket, power hitters commit to shots
+        intent_floor_bonus = {
+            "anchor": 3,             # Anchors play safe - better defense
+            "accumulator": 0,        # Standard baseline
+            "aggressive": 0,         # Rely on variance, not floor
+            "power_hitter": 0,       # Rely on variance, not floor penalty
+        }
+
         # Base bonus for defend (safer), penalty for attack (riskier)
         base_adjustment = {"defend": 8, "balanced": 0, "attack": -5}[aggression]
+        base_adjustment += intent_floor_bonus.get(batter_intent, 0)
 
         # CRITICAL FIX: Minimum effective batting to prevent tail-ender massacre
         # Even tail-enders can block and survive - they don't get out every ball

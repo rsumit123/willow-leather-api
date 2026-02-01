@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from app.database import get_session
 from app.models.career import (
-    Career, Season, Fixture, TeamSeasonStats,
+    Career, Season, Fixture, TeamSeasonStats, PlayerSeasonStats,
     CareerStatus, SeasonPhase, FixtureType, FixtureStatus
 )
 from app.models.team import Team
@@ -15,8 +15,11 @@ from app.models.player import PlayerRole
 from app.models.playing_xi import PlayingXI
 from app.engine.season_engine import SeasonEngine
 from app.validators.playing_xi_validator import PlayingXIValidator
+from app.models.player import Player
 from app.api.schemas import (
-    SeasonResponse, FixtureResponse, StandingResponse, MatchResultResponse
+    SeasonResponse, FixtureResponse, StandingResponse, MatchResultResponse,
+    LeaderboardsResponse, BatterLeaderboardEntry, BowlerLeaderboardEntry,
+    SixesLeaderboardEntry, CatchesLeaderboardEntry
 )
 
 router = APIRouter(prefix="/season", tags=["Season"])
@@ -475,3 +478,121 @@ def get_playoff_bracket(career_id: int, db: Session = Depends(get_db)):
         }
 
     return bracket
+
+
+@router.get("/{career_id}/leaderboards", response_model=LeaderboardsResponse)
+def get_leaderboards(career_id: int, db: Session = Depends(get_db)):
+    """Get tournament leaderboards (Orange Cap, Purple Cap, Most Sixes, Most Catches)"""
+    career, season = get_current_season(career_id, db)
+
+    # Get all player season stats for this season
+    all_stats = (
+        db.query(PlayerSeasonStats)
+        .filter_by(season_id=season.id)
+        .all()
+    )
+
+    # Build Orange Cap (top run scorers)
+    batter_stats = sorted(
+        [s for s in all_stats if s.runs > 0],
+        key=lambda s: (-s.runs, -s.strike_rate)  # Primary: runs desc, Secondary: SR desc
+    )[:10]
+
+    orange_cap = []
+    for rank, stats in enumerate(batter_stats, 1):
+        player = db.query(Player).get(stats.player_id)
+        team = db.query(Team).get(stats.team_id)
+        orange_cap.append(BatterLeaderboardEntry(
+            rank=rank,
+            player_id=stats.player_id,
+            player_name=player.name if player else "Unknown",
+            team_id=stats.team_id,
+            team_short_name=team.short_name if team else "?",
+            runs=stats.runs,
+            matches=stats.matches_batted,
+            innings=stats.matches_batted,
+            not_outs=stats.not_outs,
+            average=stats.batting_average,
+            strike_rate=stats.strike_rate,
+            fours=stats.fours,
+            sixes=stats.sixes,
+            highest_score=stats.highest_score
+        ))
+
+    # Build Purple Cap (top wicket takers)
+    bowler_stats = sorted(
+        [s for s in all_stats if s.wickets > 0],
+        key=lambda s: (-s.wickets, s.runs_conceded)  # Primary: wickets desc, Secondary: runs asc (tiebreaker)
+    )[:10]
+
+    purple_cap = []
+    for rank, stats in enumerate(bowler_stats, 1):
+        player = db.query(Player).get(stats.player_id)
+        team = db.query(Team).get(stats.team_id)
+        purple_cap.append(BowlerLeaderboardEntry(
+            rank=rank,
+            player_id=stats.player_id,
+            player_name=player.name if player else "Unknown",
+            team_id=stats.team_id,
+            team_short_name=team.short_name if team else "?",
+            wickets=stats.wickets,
+            matches=stats.matches_bowled,
+            overs=round(stats.overs_bowled, 1),
+            runs_conceded=stats.runs_conceded,
+            economy=stats.economy_rate,
+            average=stats.bowling_average,
+            best_bowling=stats.best_bowling
+        ))
+
+    # Build Most Sixes
+    sixes_stats = sorted(
+        [s for s in all_stats if s.sixes > 0],
+        key=lambda s: (-s.sixes, -s.runs)  # Primary: sixes desc, Secondary: runs desc
+    )[:10]
+
+    most_sixes = []
+    for rank, stats in enumerate(sixes_stats, 1):
+        player = db.query(Player).get(stats.player_id)
+        team = db.query(Team).get(stats.team_id)
+        most_sixes.append(SixesLeaderboardEntry(
+            rank=rank,
+            player_id=stats.player_id,
+            player_name=player.name if player else "Unknown",
+            team_id=stats.team_id,
+            team_short_name=team.short_name if team else "?",
+            sixes=stats.sixes,
+            runs=stats.runs,
+            matches=stats.matches_batted
+        ))
+
+    # Build Most Catches/Dismissals
+    fielding_stats = sorted(
+        [s for s in all_stats if (s.catches + s.stumpings + s.run_outs) > 0],
+        key=lambda s: (-(s.catches + s.stumpings + s.run_outs), -s.catches)
+    )[:10]
+
+    most_catches = []
+    for rank, stats in enumerate(fielding_stats, 1):
+        player = db.query(Player).get(stats.player_id)
+        team = db.query(Team).get(stats.team_id)
+        # Get matches - use max of batted/bowled as they may have only fielded
+        matches = max(stats.matches_batted, stats.matches_bowled) if stats.matches_batted or stats.matches_bowled else 0
+        most_catches.append(CatchesLeaderboardEntry(
+            rank=rank,
+            player_id=stats.player_id,
+            player_name=player.name if player else "Unknown",
+            team_id=stats.team_id,
+            team_short_name=team.short_name if team else "?",
+            catches=stats.catches,
+            stumpings=stats.stumpings,
+            run_outs=stats.run_outs,
+            total_dismissals=stats.catches + stats.stumpings + stats.run_outs,
+            matches=matches
+        ))
+
+    return LeaderboardsResponse(
+        orange_cap=orange_cap,
+        purple_cap=purple_cap,
+        most_sixes=most_sixes,
+        most_catches=most_catches
+    )

@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.models.team import Team
-from app.models.career import Season, Fixture, TeamSeasonStats, FixtureType, FixtureStatus, SeasonPhase
+from app.models.career import Season, Fixture, TeamSeasonStats, FixtureType, FixtureStatus, SeasonPhase, PlayerSeasonStats
 from app.models.match import Match, MatchStatus
 from app.engine.match_engine import MatchEngine
 
@@ -236,6 +236,9 @@ class SeasonEngine:
         # Update team season stats
         self._update_team_stats(team1, team2, winner, result, batting_first)
 
+        # Update player season stats for leaderboards
+        self._update_player_season_stats(team1, team2, batting_first)
+
         # Update season progress
         self.season.current_match_number = fixture.match_number
 
@@ -385,6 +388,110 @@ class SeasonEngine:
             stats1.overs_faced += overs2
             stats1.runs_conceded += innings1["runs"]
             stats1.overs_bowled += overs1
+
+    def _update_player_season_stats(self, team1: Team, team2: Team, batting_first: Team):
+        """Update player season stats from simulated match data"""
+        # Process both innings
+        for innings in [self._match_engine.innings1, self._match_engine.innings2]:
+            if not innings:
+                continue
+
+            # Determine which team is batting/bowling
+            batting_team = batting_first if innings == self._match_engine.innings1 else (
+                team2 if batting_first == team1 else team1
+            )
+            bowling_team = team2 if batting_team == team1 else team1
+
+            # Update batting stats
+            for player_id, batter_innings in innings.batter_innings.items():
+                player_stats = self.session.query(PlayerSeasonStats).filter_by(
+                    season_id=self.season.id,
+                    player_id=player_id
+                ).first()
+
+                if not player_stats:
+                    player_stats = PlayerSeasonStats(
+                        season_id=self.season.id,
+                        player_id=player_id,
+                        team_id=batting_team.id,
+                        matches_batted=0, runs=0, balls_faced=0, fours=0, sixes=0,
+                        highest_score=0, not_outs=0, matches_bowled=0, wickets=0,
+                        overs_bowled=0.0, runs_conceded=0, best_bowling_wickets=0,
+                        best_bowling_runs=0, catches=0, stumpings=0, run_outs=0
+                    )
+                    self.session.add(player_stats)
+
+                player_stats.matches_batted += 1
+                player_stats.runs += batter_innings.runs
+                player_stats.balls_faced += batter_innings.balls
+                player_stats.fours += batter_innings.fours
+                player_stats.sixes += batter_innings.sixes
+
+                if not batter_innings.is_out:
+                    player_stats.not_outs += 1
+
+                if batter_innings.runs > player_stats.highest_score:
+                    player_stats.highest_score = batter_innings.runs
+
+            # Update bowling stats
+            for player_id, bowler_spell in innings.bowler_spells.items():
+                player_stats = self.session.query(PlayerSeasonStats).filter_by(
+                    season_id=self.season.id,
+                    player_id=player_id
+                ).first()
+
+                if not player_stats:
+                    player_stats = PlayerSeasonStats(
+                        season_id=self.season.id,
+                        player_id=player_id,
+                        team_id=bowling_team.id,
+                        matches_batted=0, runs=0, balls_faced=0, fours=0, sixes=0,
+                        highest_score=0, not_outs=0, matches_bowled=0, wickets=0,
+                        overs_bowled=0.0, runs_conceded=0, best_bowling_wickets=0,
+                        best_bowling_runs=0, catches=0, stumpings=0, run_outs=0
+                    )
+                    self.session.add(player_stats)
+
+                player_stats.matches_bowled += 1
+                player_stats.wickets += bowler_spell.wickets
+                player_stats.overs_bowled += bowler_spell.overs + (bowler_spell.balls / 6)
+                player_stats.runs_conceded += bowler_spell.runs
+
+                # Update best bowling figures
+                if (bowler_spell.wickets > player_stats.best_bowling_wickets or
+                    (bowler_spell.wickets == player_stats.best_bowling_wickets and
+                     bowler_spell.runs < player_stats.best_bowling_runs)):
+                    player_stats.best_bowling_wickets = bowler_spell.wickets
+                    player_stats.best_bowling_runs = bowler_spell.runs
+
+            # Update fielding stats from dismissals
+            for player_id, batter_innings in innings.batter_innings.items():
+                if batter_innings.is_out and batter_innings.fielder:
+                    fielder_id = batter_innings.fielder.id
+                    fielder_stats = self.session.query(PlayerSeasonStats).filter_by(
+                        season_id=self.season.id,
+                        player_id=fielder_id
+                    ).first()
+
+                    if not fielder_stats:
+                        fielder_stats = PlayerSeasonStats(
+                            season_id=self.season.id,
+                            player_id=fielder_id,
+                            team_id=bowling_team.id,
+                            matches_batted=0, runs=0, balls_faced=0, fours=0, sixes=0,
+                            highest_score=0, not_outs=0, matches_bowled=0, wickets=0,
+                            overs_bowled=0.0, runs_conceded=0, best_bowling_wickets=0,
+                            best_bowling_runs=0, catches=0, stumpings=0, run_outs=0
+                        )
+                        self.session.add(fielder_stats)
+
+                    dismissal = batter_innings.dismissal
+                    if dismissal in ["caught", "caught_behind"]:
+                        fielder_stats.catches += 1
+                    elif dismissal == "stumped":
+                        fielder_stats.stumpings += 1
+                    elif dismissal == "run_out":
+                        fielder_stats.run_outs += 1
 
     def is_league_complete(self) -> bool:
         """Check if all league matches are played"""
