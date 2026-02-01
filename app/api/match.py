@@ -332,7 +332,8 @@ def _build_innings_scorecard(innings: InningsState, batting_team: Team, bowling_
             wickets=spell.wickets,
             economy=round(spell.economy, 2),
             wides=spell.wides,
-            no_balls=spell.no_balls
+            no_balls=spell.no_balls,
+            traits=_parse_traits(spell.player.traits)
         ))
 
     # Did not bat list

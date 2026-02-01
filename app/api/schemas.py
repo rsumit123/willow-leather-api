@@ -458,6 +458,7 @@ class BowlerScorecardEntry(BaseModel):
     economy: float
     wides: int
     no_balls: int
+    traits: list[str] = []
 
 
 class ExtrasBreakdown(BaseModel):
