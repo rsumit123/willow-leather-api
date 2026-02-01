@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
-from app.database import get_session
+from app.database import get_db
 from app.models.user import User
 from app.auth.config import settings
 from app.auth.utils import (
@@ -55,7 +55,7 @@ class TokenResponse(BaseModel):
 @router.post("/google", response_model=AuthResponse)
 def google_auth(
     request: GoogleAuthRequest,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_db),
 ):
     """
     Authenticate with Google OAuth.
@@ -115,7 +115,7 @@ def google_auth(
 @router.post("/refresh", response_model=TokenResponse)
 def refresh_token(
     request: RefreshRequest,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_db),
 ):
     """
     Refresh an access token using a valid refresh token.

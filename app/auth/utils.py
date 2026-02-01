@@ -9,7 +9,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
-from app.database import get_session
+from app.database import get_db
 from app.models.user import User
 from app.auth.config import settings
 
@@ -56,7 +56,7 @@ def verify_token(token: str, token_type: str = "access") -> Optional[int]:
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_db),
 ) -> User:
     """
     FastAPI dependency to get the current authenticated user.
@@ -80,6 +80,3 @@ def get_current_user(
     return user
 
 
-def get_db():
-    """Get database session - wrapper for consistency"""
-    return get_session()

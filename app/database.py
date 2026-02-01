@@ -21,5 +21,14 @@ def init_db():
 
 
 def get_session():
-    """Get a database session"""
+    """Get a database session - for direct use (caller must close)"""
     return SessionLocal()
+
+
+def get_db():
+    """FastAPI dependency - yields session and closes after request"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
