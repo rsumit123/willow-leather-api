@@ -32,6 +32,7 @@ class Career(Base):
     """
     Represents a single career playthrough.
     A career spans multiple seasons with the same teams.
+    Each career belongs to a user (max 3 per user).
     """
     __tablename__ = "careers"
 
@@ -39,6 +40,10 @@ class Career(Base):
     name: Mapped[str] = mapped_column(String(100))  # Career save name
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Owner
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    user: Mapped["User"] = relationship("User", back_populates="careers")
 
     # Current state
     status: Mapped[CareerStatus] = mapped_column(Enum(CareerStatus), default=CareerStatus.SETUP)

@@ -10,10 +10,13 @@ from app.database import get_session
 from app.models.career import Career, Season, CareerStatus, SeasonPhase
 from app.models.team import Team
 from app.models.player import Player
+from app.models.user import User
 from app.models.auction import Auction, AuctionStatus
 from app.models.playing_xi import PlayingXI
 from app.generators import PlayerGenerator, TeamGenerator
 from app.validators.playing_xi_validator import PlayingXIValidator
+from app.auth.utils import get_current_user
+from app.auth.config import settings
 from app.api.schemas import (
     CareerCreate, CareerResponse, CareerDetail, TeamChoice, TeamResponse,
     SquadResponse, PlayerResponse, PlayingXIRequest, PlayingXIPlayerResponse,
@@ -21,6 +24,8 @@ from app.api.schemas import (
 )
 
 router = APIRouter(prefix="/career", tags=["Career"])
+
+MAX_CAREERS = settings.MAX_CAREERS_PER_USER
 
 
 def parse_traits(traits_json: Optional[str]) -> List[str]:
@@ -48,7 +53,11 @@ def get_team_choices():
 
 
 @router.post("/new", response_model=CareerDetail)
-def create_career(career_data: CareerCreate, db: Session = Depends(get_db)):
+def create_career(
+    career_data: CareerCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
     Create a new career.
     This will:
@@ -57,6 +66,14 @@ def create_career(career_data: CareerCreate, db: Session = Depends(get_db)):
     3. Generate player pool for auction
     4. Create first season
     """
+    # Check career limit
+    existing_count = db.query(Career).filter_by(user_id=current_user.id).count()
+    if existing_count >= MAX_CAREERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_CAREERS} careers allowed. Delete one to create more."
+        )
+
     # Validate team index
     if career_data.team_index < 0 or career_data.team_index > 7:
         raise HTTPException(status_code=400, detail="Team index must be 0-7")
@@ -65,6 +82,7 @@ def create_career(career_data: CareerCreate, db: Session = Depends(get_db)):
     career = Career(
         name=career_data.name,
         status=CareerStatus.PRE_AUCTION,
+        user_id=current_user.id,
     )
     db.add(career)
     db.flush()  # Get career ID
@@ -115,16 +133,23 @@ def create_career(career_data: CareerCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/list", response_model=List[CareerResponse])
-def list_careers(db: Session = Depends(get_db)):
-    """List all saved careers"""
-    careers = db.query(Career).order_by(Career.updated_at.desc()).all()
+def list_careers(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all saved careers for the current user"""
+    careers = db.query(Career).filter_by(user_id=current_user.id).order_by(Career.updated_at.desc()).all()
     return [CareerResponse.model_validate(c) for c in careers]
 
 
 @router.get("/{career_id}", response_model=CareerDetail)
-def get_career(career_id: int, db: Session = Depends(get_db)):
+def get_career(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get career details"""
-    career = db.query(Career).filter_by(id=career_id).first()
+    career = db.query(Career).filter_by(id=career_id, user_id=current_user.id).first()
     if not career:
         raise HTTPException(status_code=404, detail="Career not found")
 
@@ -142,9 +167,13 @@ def get_career(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/{career_id}")
-def delete_career(career_id: int, db: Session = Depends(get_db)):
+def delete_career(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Delete a career (and all associated data)"""
-    career = db.query(Career).filter_by(id=career_id).first()
+    career = db.query(Career).filter_by(id=career_id, user_id=current_user.id).first()
     if not career:
         raise HTTPException(status_code=404, detail="Career not found")
 
@@ -157,9 +186,13 @@ def delete_career(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{career_id}/teams", response_model=List[TeamResponse])
-def get_career_teams(career_id: int, db: Session = Depends(get_db)):
+def get_career_teams(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get all teams in a career"""
-    career = db.query(Career).filter_by(id=career_id).first()
+    career = db.query(Career).filter_by(id=career_id, user_id=current_user.id).first()
     if not career:
         raise HTTPException(status_code=404, detail="Career not found")
 
@@ -168,9 +201,14 @@ def get_career_teams(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{career_id}/teams/{team_id}/squad", response_model=SquadResponse)
-def get_team_squad(career_id: int, team_id: int, db: Session = Depends(get_db)):
+def get_team_squad(
+    career_id: int,
+    team_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get a team's squad"""
-    career = db.query(Career).filter_by(id=career_id).first()
+    career = db.query(Career).filter_by(id=career_id, user_id=current_user.id).first()
     if not career:
         raise HTTPException(status_code=404, detail="Career not found")
 
@@ -214,9 +252,13 @@ def get_team_squad(career_id: int, team_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{career_id}/playing-xi", response_model=PlayingXIResponse)
-def get_playing_xi(career_id: int, db: Session = Depends(get_db)):
+def get_playing_xi(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get user team's playing XI"""
-    career = db.query(Career).filter_by(id=career_id).first()
+    career = db.query(Career).filter_by(id=career_id, user_id=current_user.id).first()
     if not career:
         raise HTTPException(status_code=404, detail="Career not found")
 
@@ -274,9 +316,14 @@ def get_playing_xi(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/playing-xi", response_model=PlayingXIResponse)
-def set_playing_xi(career_id: int, request: PlayingXIRequest, db: Session = Depends(get_db)):
+def set_playing_xi(
+    career_id: int,
+    request: PlayingXIRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Set user team's playing XI (validates before saving)"""
-    career = db.query(Career).filter_by(id=career_id).first()
+    career = db.query(Career).filter_by(id=career_id, user_id=current_user.id).first()
     if not career:
         raise HTTPException(status_code=404, detail="Career not found")
 
@@ -373,9 +420,14 @@ def set_playing_xi(career_id: int, request: PlayingXIRequest, db: Session = Depe
 
 
 @router.post("/{career_id}/playing-xi/validate", response_model=PlayingXIValidationResponse)
-def validate_playing_xi(career_id: int, request: PlayingXIRequest, db: Session = Depends(get_db)):
+def validate_playing_xi(
+    career_id: int,
+    request: PlayingXIRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Validate proposed XI without saving (for real-time feedback)"""
-    career = db.query(Career).filter_by(id=career_id).first()
+    career = db.query(Career).filter_by(id=career_id, user_id=current_user.id).first()
     if not career:
         raise HTTPException(status_code=404, detail="Career not found")
 

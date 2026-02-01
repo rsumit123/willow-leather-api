@@ -10,11 +10,13 @@ from app.database import get_session
 from app.models.career import Career, Season, CareerStatus, SeasonPhase
 from app.models.team import Team
 from app.models.player import Player
+from app.models.user import User
 from app.models.auction import (
     Auction, AuctionPlayerEntry, TeamAuctionState,
     AuctionStatus, AuctionPlayerStatus
 )
 from app.engine.auction_engine import AuctionEngine
+from app.auth.utils import get_current_user
 from app.api.schemas import (
     AuctionStateResponse, TeamAuctionStateResponse, BidResponse,
     AuctionPlayerResult, PlayerBrief, CategoryPlayersResponse,
@@ -62,9 +64,9 @@ def get_db():
         db.close()
 
 
-def get_current_auction(career_id: int, db: Session) -> tuple[Career, Season, Auction]:
-    """Helper to get current auction"""
-    career = db.query(Career).filter_by(id=career_id).first()
+def get_current_auction(career_id: int, user_id: int, db: Session) -> tuple[Career, Season, Auction]:
+    """Helper to get current auction with ownership verification"""
+    career = db.query(Career).filter_by(id=career_id, user_id=user_id).first()
     if not career:
         raise HTTPException(status_code=404, detail="Career not found")
 
@@ -84,9 +86,13 @@ def get_current_auction(career_id: int, db: Session) -> tuple[Career, Season, Au
 
 
 @router.post("/{career_id}/start")
-def start_auction(career_id: int, db: Session = Depends(get_db)):
+def start_auction(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Start the auction for the current season"""
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status != AuctionStatus.NOT_STARTED:
         raise HTTPException(status_code=400, detail="Auction already started or completed")
@@ -111,9 +117,13 @@ def start_auction(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{career_id}/state", response_model=AuctionStateResponse)
-def get_auction_state(career_id: int, db: Session = Depends(get_db)):
+def get_auction_state(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get current auction state"""
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     current_player = None
     current_bidder_name = None
@@ -140,9 +150,13 @@ def get_auction_state(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{career_id}/teams", response_model=List[TeamAuctionStateResponse])
-def get_teams_auction_state(career_id: int, db: Session = Depends(get_db)):
+def get_teams_auction_state(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get all teams' auction state"""
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     states = db.query(TeamAuctionState).filter_by(auction_id=auction.id).all()
 
@@ -166,9 +180,13 @@ def get_teams_auction_state(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/next-player", response_model=NextPlayerResponse)
-def next_player(career_id: int, db: Session = Depends(get_db)):
+def next_player(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Move to next player in auction"""
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Auction not in progress")
@@ -218,9 +236,13 @@ def next_player(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/bid", response_model=BidResponse)
-def place_user_bid(career_id: int, db: Session = Depends(get_db)):
+def place_user_bid(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Place a bid for the user's team"""
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Auction not in progress")
@@ -267,9 +289,13 @@ def place_user_bid(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/pass")
-def pass_bidding(career_id: int, db: Session = Depends(get_db)):
+def pass_bidding(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """User passes on current bidding (lets AI continue)"""
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Auction not in progress")
@@ -281,12 +307,16 @@ def pass_bidding(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/simulate-bidding")
-def simulate_bidding_round(career_id: int, db: Session = Depends(get_db)):
+def simulate_bidding_round(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
     Simulate one round of AI bidding.
     Call this repeatedly until bidding is complete.
     """
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Auction not in progress")
@@ -327,9 +357,13 @@ def simulate_bidding_round(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/finalize-player", response_model=AuctionPlayerResult)
-def finalize_current_player(career_id: int, db: Session = Depends(get_db)):
+def finalize_current_player(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Finalize bidding on current player (sold or unsold)"""
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Auction not in progress")
@@ -357,12 +391,16 @@ def finalize_current_player(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/auto-complete")
-def auto_complete_auction(career_id: int, db: Session = Depends(get_db)):
+def auto_complete_auction(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
     Auto-complete the entire auction (for testing or if user wants to skip).
     Simulates all remaining bidding.
     """
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status == AuctionStatus.NOT_STARTED:
         # Start it first
@@ -432,9 +470,13 @@ def auto_complete_auction(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{career_id}/remaining-players", response_model=CategoryPlayersResponse)
-def get_remaining_players(career_id: int, db: Session = Depends(get_db)):
+def get_remaining_players(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get remaining and sold players grouped by category with counts."""
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Auction not in progress")
@@ -499,10 +541,15 @@ def get_remaining_players(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/skip-category/{category}", response_model=SkipCategoryResponse)
-def skip_category(career_id: int, category: str, db: Session = Depends(get_db)):
+def skip_category(
+    career_id: int,
+    category: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Skip a category - AI teams compete for all players in the category.
     User's team is excluded from bidding since they chose to skip."""
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Auction not in progress")
@@ -549,10 +596,14 @@ def skip_category(career_id: int, category: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/quick-pass", response_model=AuctionPlayerResult)
-def quick_pass_player(career_id: int, db: Session = Depends(get_db)):
+def quick_pass_player(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Quick pass - complete current player's bidding with AI-only competition instantly.
     User's team is excluded from bidding since they chose to pass."""
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Auction not in progress")
@@ -588,12 +639,17 @@ def quick_pass_player(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/auto-bid", response_model=AutoBidResponse)
-def auto_bid(career_id: int, request: AutoBidRequest, db: Session = Depends(get_db)):
+def auto_bid(
+    career_id: int,
+    request: AutoBidRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
     Auto-bid on current player up to max_bid.
     Returns status: won/lost (finalized) or cap_exceeded/budget_limit (user decides).
     """
-    career, season, auction = get_current_auction(career_id, db)
+    career, season, auction = get_current_auction(career_id, current_user.id, db)
 
     if auction.status != AuctionStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Auction not in progress")

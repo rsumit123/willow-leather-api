@@ -2,14 +2,19 @@
 Willow & Leather - Cricket Management Simulation API
 """
 import os
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# Load environment variables
+load_dotenv()
 
 from app.database import init_db
 from app.api.career import router as career_router
 from app.api.auction import router as auction_router
 from app.api.season import router as season_router
 from app.api.match import router as match_router
+from app.api.auth import router as auth_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -43,6 +48,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth_router, prefix="/api")
 app.include_router(career_router, prefix="/api")
 app.include_router(auction_router, prefix="/api")
 app.include_router(season_router, prefix="/api")

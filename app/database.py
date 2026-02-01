@@ -16,7 +16,7 @@ class Base(DeclarativeBase):
 
 def init_db():
     """Create all tables"""
-    from app.models import player, team, match, playing_xi, career, auction  # noqa
+    from app.models import user, player, team, match, playing_xi, career, auction  # noqa
     Base.metadata.create_all(bind=engine)
 
 

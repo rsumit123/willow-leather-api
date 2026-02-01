@@ -1,3 +1,4 @@
+from app.models.user import User
 from app.models.player import Player
 from app.models.team import Team
 from app.models.match import Match, Innings, BallEvent
@@ -6,6 +7,7 @@ from app.models.auction import Auction, AuctionPlayerEntry, AuctionBid, TeamAuct
 from app.models.playing_xi import PlayingXI
 
 __all__ = [
+    "User",
     "Player",
     "Team",
     "Match",

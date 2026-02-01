@@ -8,6 +8,7 @@ from app.database import get_session
 from app.models.career import Career, Fixture, FixtureStatus, FixtureType, Season, SeasonPhase, CareerStatus, PlayerSeasonStats
 from app.models.team import Team
 from app.models.player import Player, PlayerRole
+from app.models.user import User
 from app.models.match import Match, MatchStatus
 from app.models.playing_xi import PlayingXI
 from app.engine.match_engine import (
@@ -15,6 +16,7 @@ from app.engine.match_engine import (
     BatterState, BowlerState, BatterInnings, BowlerSpell
 )
 from app.engine.season_engine import SeasonEngine
+from app.auth.utils import get_current_user
 from app.api.schemas import (
     MatchStateResponse, BallRequest, BallResultResponse,
     PlayerStateBrief, BowlerStateBrief, TossResultResponse, StartMatchRequest,
@@ -61,6 +63,14 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def verify_career_ownership(career_id: int, user_id: int, db: Session) -> Career:
+    """Verify user owns this career"""
+    career = db.query(Career).filter_by(id=career_id, user_id=user_id).first()
+    if not career:
+        raise HTTPException(status_code=404, detail="Career not found")
+    return career
 
 
 def _get_playing_xi(team: Team, season_id: int, db: Session) -> list:
@@ -457,18 +467,21 @@ def _calculate_man_of_the_match(engine: MatchEngine, winner_id: int, db: Session
 
 
 @router.post("/{career_id}/match/{fixture_id}/toss")
-def do_toss(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+def do_toss(
+    career_id: int,
+    fixture_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Perform toss and return result"""
+    career = verify_career_ownership(career_id, current_user.id, db)
+
     fixture = db.query(Fixture).filter_by(id=fixture_id).first()
     if not fixture:
         raise HTTPException(status_code=404, detail="Fixture not found")
 
     if fixture.status == FixtureStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Match already completed")
-
-    career = db.query(Career).get(career_id)
-    if not career:
-        raise HTTPException(status_code=404, detail="Career not found")
 
     user_team = db.query(Team).get(career.user_team_id)
 
@@ -495,9 +508,12 @@ def start_match(
     career_id: int,
     fixture_id: int,
     request: Optional[StartMatchRequest] = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Start match with toss decision. If no request body, uses auto toss."""
+    career = verify_career_ownership(career_id, current_user.id, db)
+
     fixture = db.query(Fixture).filter_by(id=fixture_id).first()
     if not fixture:
         raise HTTPException(status_code=404, detail="Fixture not found")
@@ -510,10 +526,6 @@ def start_match(
         # Reset to scheduled so we can start fresh
         fixture.status = FixtureStatus.SCHEDULED
         db.commit()
-
-    career = db.query(Career).get(career_id)
-    if not career:
-        raise HTTPException(status_code=404, detail="Career not found")
 
     # Get teams and players
     team1 = db.query(Team).get(fixture.team1_id)
@@ -579,7 +591,13 @@ def start_match(
     return _get_match_state_response(engine, fixture, db, career.user_team_id)
 
 @router.get("/{career_id}/match/{fixture_id}/state")
-def get_match_state(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+def get_match_state(
+    career_id: int,
+    fixture_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    verify_career_ownership(career_id, current_user.id, db)
     if fixture_id not in active_matches:
         raise HTTPException(status_code=404, detail="Active match session not found")
     
@@ -589,7 +607,14 @@ def get_match_state(career_id: int, fixture_id: int, db: Session = Depends(get_d
     return _get_match_state_response(engine, fixture, db)
 
 @router.post("/{career_id}/match/{fixture_id}/ball")
-def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session = Depends(get_db)):
+def play_ball(
+    career_id: int,
+    fixture_id: int,
+    request: BallRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    verify_career_ownership(career_id, current_user.id, db)
     if fixture_id not in active_matches:
         raise HTTPException(status_code=404, detail="Active match session not found")
     
@@ -983,7 +1008,14 @@ def _finalize_match_interactive(engine: MatchEngine, fixture: Fixture, db: Sessi
     return (winner.id if winner else None, margin)
 
 @router.post("/{career_id}/match/{fixture_id}/simulate-over")
-def simulate_over_interactive(career_id: int, fixture_id: int, request: Optional[BallRequest] = None, db: Session = Depends(get_db)):
+def simulate_over_interactive(
+    career_id: int,
+    fixture_id: int,
+    request: Optional[BallRequest] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    verify_career_ownership(career_id, current_user.id, db)
     if fixture_id not in active_matches:
         raise HTTPException(status_code=404, detail="Active match session not found")
 
@@ -1038,7 +1070,13 @@ def simulate_over_interactive(career_id: int, fixture_id: int, request: Optional
     return _get_match_state_response(engine, fixture, db, innings_just_changed=innings_just_changed)
 
 @router.post("/{career_id}/match/{fixture_id}/simulate-innings")
-def simulate_innings_interactive(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+def simulate_innings_interactive(
+    career_id: int,
+    fixture_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    verify_career_ownership(career_id, current_user.id, db)
     if fixture_id not in active_matches:
         raise HTTPException(status_code=404, detail="Active match session not found")
 
@@ -1093,8 +1131,14 @@ def simulate_innings_interactive(career_id: int, fixture_id: int, db: Session = 
 
 
 @router.get("/{career_id}/match/{fixture_id}/available-bowlers")
-def get_available_bowlers(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+def get_available_bowlers(
+    career_id: int,
+    fixture_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get bowlers available for next over"""
+    verify_career_ownership(career_id, current_user.id, db)
     if fixture_id not in active_matches:
         raise HTTPException(status_code=404, detail="Active match session not found")
 
@@ -1151,8 +1195,15 @@ def get_available_bowlers(career_id: int, fixture_id: int, db: Session = Depends
 
 
 @router.post("/{career_id}/match/{fixture_id}/select-bowler")
-def select_bowler_manual(career_id: int, fixture_id: int, request: SelectBowlerRequest, db: Session = Depends(get_db)):
+def select_bowler_manual(
+    career_id: int,
+    fixture_id: int,
+    request: SelectBowlerRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Manually select bowler for next over"""
+    verify_career_ownership(career_id, current_user.id, db)
     if fixture_id not in active_matches:
         raise HTTPException(status_code=404, detail="Active match session not found")
 
@@ -1195,8 +1246,14 @@ def select_bowler_manual(career_id: int, fixture_id: int, request: SelectBowlerR
 
 
 @router.get("/{career_id}/match/{fixture_id}/scorecard")
-def get_live_scorecard(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+def get_live_scorecard(
+    career_id: int,
+    fixture_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get live scorecard during an active match"""
+    verify_career_ownership(career_id, current_user.id, db)
     if fixture_id not in active_matches:
         raise HTTPException(status_code=404, detail="Active match session not found")
 
@@ -1233,8 +1290,14 @@ def get_live_scorecard(career_id: int, fixture_id: int, db: Session = Depends(ge
 
 
 @router.get("/{career_id}/match/{fixture_id}/result")
-def get_match_result(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+def get_match_result(
+    career_id: int,
+    fixture_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get complete match result with scorecard and Man of the Match after match ends"""
+    verify_career_ownership(career_id, current_user.id, db)
     # First check if match is still active (just completed)
     if fixture_id in active_matches:
         engine = active_matches[fixture_id]

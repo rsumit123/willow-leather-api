@@ -12,10 +12,12 @@ from app.models.career import (
 )
 from app.models.team import Team
 from app.models.player import PlayerRole
+from app.models.user import User
 from app.models.playing_xi import PlayingXI
 from app.engine.season_engine import SeasonEngine
 from app.validators.playing_xi_validator import PlayingXIValidator
 from app.models.player import Player
+from app.auth.utils import get_current_user
 from app.api.schemas import (
     SeasonResponse, FixtureResponse, StandingResponse, MatchResultResponse,
     LeaderboardsResponse, BatterLeaderboardEntry, BowlerLeaderboardEntry,
@@ -110,9 +112,9 @@ def _auto_select_xi(team: Team) -> list:
     return xi
 
 
-def get_current_season(career_id: int, db: Session) -> tuple[Career, Season]:
-    """Helper to get current season"""
-    career = db.query(Career).filter_by(id=career_id).first()
+def get_current_season(career_id: int, user_id: int, db: Session) -> tuple[Career, Season]:
+    """Helper to get current season with ownership verification"""
+    career = db.query(Career).filter_by(id=career_id, user_id=user_id).first()
     if not career:
         raise HTTPException(status_code=404, detail="Career not found")
 
@@ -128,16 +130,24 @@ def get_current_season(career_id: int, db: Session) -> tuple[Career, Season]:
 
 
 @router.get("/{career_id}", response_model=SeasonResponse)
-def get_season_info(career_id: int, db: Session = Depends(get_db)):
+def get_season_info(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get current season info"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
     return SeasonResponse.model_validate(season)
 
 
 @router.post("/{career_id}/generate-fixtures")
-def generate_fixtures(career_id: int, db: Session = Depends(get_db)):
+def generate_fixtures(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Generate league fixtures for the season"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
 
     if not season.auction_completed:
         raise HTTPException(status_code=400, detail="Complete auction first")
@@ -187,10 +197,11 @@ def get_fixtures(
     career_id: int,
     fixture_type: Optional[str] = None,
     status: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get all fixtures for the season"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
 
     query = db.query(Fixture).filter_by(season_id=season.id)
 
@@ -224,9 +235,13 @@ def get_fixtures(
 
 
 @router.get("/{career_id}/next-fixture", response_model=Optional[FixtureResponse])
-def get_next_fixture(career_id: int, db: Session = Depends(get_db)):
+def get_next_fixture(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get the next scheduled fixture"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
 
     engine = SeasonEngine(db, season)
     fixture = engine.get_next_fixture()
@@ -253,9 +268,13 @@ def get_next_fixture(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{career_id}/standings", response_model=List[StandingResponse])
-def get_standings(career_id: int, db: Session = Depends(get_db)):
+def get_standings(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get current league standings"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
 
     engine = SeasonEngine(db, season)
     standings = engine.get_league_standings()
@@ -278,9 +297,14 @@ def get_standings(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/simulate-match/{fixture_id}", response_model=MatchResultResponse)
-def simulate_match(career_id: int, fixture_id: int, db: Session = Depends(get_db)):
+def simulate_match(
+    career_id: int,
+    fixture_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Simulate a specific match"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
 
     fixture = db.query(Fixture).filter_by(id=fixture_id, season_id=season.id).first()
     if not fixture:
@@ -307,9 +331,13 @@ def simulate_match(career_id: int, fixture_id: int, db: Session = Depends(get_db
 
 
 @router.post("/{career_id}/simulate-next-match", response_model=MatchResultResponse)
-def simulate_next_match(career_id: int, db: Session = Depends(get_db)):
+def simulate_next_match(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Simulate the next scheduled match"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
 
     engine = SeasonEngine(db, season)
     fixture = engine.get_next_fixture()
@@ -341,9 +369,13 @@ def simulate_next_match(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/simulate-all-league")
-def simulate_all_league_matches(career_id: int, db: Session = Depends(get_db)):
+def simulate_all_league_matches(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Simulate all remaining league matches"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
 
     engine = SeasonEngine(db, season)
     results = []
@@ -383,9 +415,13 @@ def simulate_all_league_matches(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{career_id}/playoffs/generate-next")
-def generate_next_playoff_fixture(career_id: int, db: Session = Depends(get_db)):
+def generate_next_playoff_fixture(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Generate the next playoff fixture based on results"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
 
     if season.phase != SeasonPhase.PLAYOFFS:
         raise HTTPException(status_code=400, detail="Not in playoffs phase")
@@ -450,9 +486,13 @@ def generate_next_playoff_fixture(career_id: int, db: Session = Depends(get_db))
 
 
 @router.get("/{career_id}/playoffs/bracket")
-def get_playoff_bracket(career_id: int, db: Session = Depends(get_db)):
+def get_playoff_bracket(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get playoff bracket status"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
 
     fixtures = db.query(Fixture).filter(
         Fixture.season_id == season.id,
@@ -481,9 +521,13 @@ def get_playoff_bracket(career_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{career_id}/leaderboards", response_model=LeaderboardsResponse)
-def get_leaderboards(career_id: int, db: Session = Depends(get_db)):
+def get_leaderboards(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get tournament leaderboards (Orange Cap, Purple Cap, Most Sixes, Most Catches)"""
-    career, season = get_current_season(career_id, db)
+    career, season = get_current_season(career_id, current_user.id, db)
 
     # Get all player season stats for this season
     all_stats = (
