@@ -698,6 +698,9 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
 
     innings.total_runs += outcome.runs
 
+    # Update partnership runs
+    innings.context.partnership_runs += outcome.runs
+
     # Handle wicket
     if outcome.is_wicket:
         innings.wickets += 1
@@ -717,6 +720,9 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
             innings.batter_innings[next_batter_id] = BatterInnings(player=next_batter_obj)
             innings.batter_states[next_batter_id] = BatterState(player_id=next_batter_id)
             innings.next_batter_index += 1
+
+        # Reset partnership on wicket
+        innings.context.partnership_runs = 0
     elif outcome.runs % 2 == 1:
         innings.striker_id, innings.non_striker_id = innings.non_striker_id, innings.striker_id
 
