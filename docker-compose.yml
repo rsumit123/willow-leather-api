@@ -10,6 +10,8 @@ services:
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-}
       - DATABASE_PATH=/app/data/willow_leather.db
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
     volumes:
       - willow-data:/app/data  # Persist SQLite database
     networks:

@@ -25,11 +25,15 @@ def migrate():
 
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("WARNING: This will DELETE ALL existing data!")
-    print("=" * 60)
-    confirm = input("Type 'yes' to confirm: ")
-    if confirm.lower() == 'yes':
+    # Support --yes flag for non-interactive mode (e.g., Docker)
+    if len(sys.argv) > 1 and sys.argv[1] == '--yes':
         migrate()
     else:
-        print("Migration cancelled.")
+        print("=" * 60)
+        print("WARNING: This will DELETE ALL existing data!")
+        print("=" * 60)
+        confirm = input("Type 'yes' to confirm: ")
+        if confirm.lower() == 'yes':
+            migrate()
+        else:
+            print("Migration cancelled.")
