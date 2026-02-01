@@ -616,12 +616,31 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
             engine.innings2.batting_team_id = fixture.team2_id if team1_bats_first else fixture.team1_id
             engine.innings2.context.pitch_type = engine.innings1.context.pitch_type # Same pitch
             engine.current_innings = engine.innings2
-
-            # Select first bowler for 2nd innings
-            bowler = engine.select_bowler(engine.innings2)
-            engine.innings2.current_bowler_id = bowler.id
             innings = engine.innings2
-            innings_just_changed = True
+
+            # Check if user is bowling in 2nd innings
+            user_team_id = getattr(engine, 'user_team_id', None)
+            is_user_batting = innings.batting_team_id == user_team_id if user_team_id else False
+            is_user_bowling = not is_user_batting
+
+            if is_user_bowling:
+                # User must select bowler manually - don't auto-select
+                innings.current_bowler_id = None
+            else:
+                # AI bowling - auto-select first bowler
+                bowler = engine.select_bowler(innings)
+                innings.current_bowler_id = bowler.id
+
+            # Return early - don't play a ball, just notify innings changed
+            return BallResultResponse(
+                outcome="innings_change",
+                runs=0,
+                is_wicket=False,
+                is_boundary=False,
+                is_six=False,
+                commentary=f"End of innings. {batting_team.name} need {target} runs to win.",
+                match_state=_get_match_state_response(engine, fixture, db, user_team_id, innings_just_changed=True)
+            )
         else:
             raise HTTPException(status_code=400, detail="Match already complete")
 
