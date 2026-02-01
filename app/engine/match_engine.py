@@ -560,6 +560,9 @@ class MatchEngine:
             # Update total
             innings.total_runs += outcome.runs
 
+            # Update partnership runs
+            innings.context.partnership_runs += outcome.runs
+
             # Handle wicket - cap at 3 per over to prevent unrealistic collapses
             # In real cricket, 4+ wickets in an over is extremely rare (maybe a handful ever)
             if outcome.is_wicket:
@@ -593,6 +596,9 @@ class MatchEngine:
                         innings.batter_states[next_batter_id] = BatterState(player_id=next_batter_id)
 
                         innings.next_batter_index += 1
+
+                    # Reset partnership on wicket
+                    innings.context.partnership_runs = 0
 
             # Rotate strike on odd runs
             if not outcome.is_wicket and outcome.runs % 2 == 1:
