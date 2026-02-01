@@ -518,6 +518,18 @@ class BatterLeaderboardEntry(BaseModel):
     fours: int
     sixes: int
     highest_score: int
+    # Player details for modal
+    role: str
+    is_overseas: bool
+    age: int
+    batting_style: str
+    bowling_type: str
+    batting: int
+    bowling: int
+    power: int
+    overall_rating: int
+    traits: List[str]
+    batting_intent: str
 
     class Config:
         from_attributes = True
@@ -536,6 +548,18 @@ class BowlerLeaderboardEntry(BaseModel):
     economy: float
     average: float
     best_bowling: str
+    # Player details for modal
+    role: str
+    is_overseas: bool
+    age: int
+    batting_style: str
+    bowling_type: str
+    batting: int
+    bowling: int
+    power: int
+    overall_rating: int
+    traits: List[str]
+    batting_intent: str
 
     class Config:
         from_attributes = True
@@ -550,6 +574,18 @@ class SixesLeaderboardEntry(BaseModel):
     sixes: int
     runs: int
     matches: int
+    # Player details for modal
+    role: str
+    is_overseas: bool
+    age: int
+    batting_style: str
+    bowling_type: str
+    batting: int
+    bowling: int
+    power: int
+    overall_rating: int
+    traits: List[str]
+    batting_intent: str
 
     class Config:
         from_attributes = True
@@ -566,6 +602,18 @@ class CatchesLeaderboardEntry(BaseModel):
     run_outs: int
     total_dismissals: int
     matches: int
+    # Player details for modal
+    role: str
+    is_overseas: bool
+    age: int
+    batting_style: str
+    bowling_type: str
+    batting: int
+    bowling: int
+    power: int
+    overall_rating: int
+    traits: List[str]
+    batting_intent: str
 
     class Config:
         from_attributes = True

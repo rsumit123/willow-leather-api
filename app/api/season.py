@@ -498,10 +498,48 @@ def get_leaderboards(career_id: int, db: Session = Depends(get_db)):
         key=lambda s: (-s.runs, -s.strike_rate)  # Primary: runs desc, Secondary: SR desc
     )[:10]
 
+    # Helper to extract player details for modal
+    def get_player_details(player):
+        if not player:
+            return {
+                "role": "batsman",
+                "is_overseas": False,
+                "age": 25,
+                "batting_style": "right_handed",
+                "bowling_type": "medium",
+                "batting": 50,
+                "bowling": 50,
+                "power": 50,
+                "overall_rating": 50,
+                "traits": [],
+                "batting_intent": "accumulator",
+            }
+        import json
+        traits = []
+        if player.traits:
+            try:
+                traits = json.loads(player.traits) if isinstance(player.traits, str) else player.traits
+            except (json.JSONDecodeError, TypeError):
+                traits = []
+        return {
+            "role": player.role.value if hasattr(player.role, 'value') else str(player.role),
+            "is_overseas": player.is_overseas,
+            "age": player.age,
+            "batting_style": player.batting_style.value if hasattr(player.batting_style, 'value') else str(player.batting_style),
+            "bowling_type": player.bowling_type.value if hasattr(player.bowling_type, 'value') else str(player.bowling_type),
+            "batting": player.batting,
+            "bowling": player.bowling,
+            "power": player.power,
+            "overall_rating": player.overall_rating,
+            "traits": traits,
+            "batting_intent": player.batting_intent if player.batting_intent else "accumulator",
+        }
+
     orange_cap = []
     for rank, stats in enumerate(batter_stats, 1):
         player = db.query(Player).get(stats.player_id)
         team = db.query(Team).get(stats.team_id)
+        player_details = get_player_details(player)
         orange_cap.append(BatterLeaderboardEntry(
             rank=rank,
             player_id=stats.player_id,
@@ -516,7 +554,8 @@ def get_leaderboards(career_id: int, db: Session = Depends(get_db)):
             strike_rate=stats.strike_rate,
             fours=stats.fours,
             sixes=stats.sixes,
-            highest_score=stats.highest_score
+            highest_score=stats.highest_score,
+            **player_details
         ))
 
     # Build Purple Cap (top wicket takers)
@@ -529,6 +568,7 @@ def get_leaderboards(career_id: int, db: Session = Depends(get_db)):
     for rank, stats in enumerate(bowler_stats, 1):
         player = db.query(Player).get(stats.player_id)
         team = db.query(Team).get(stats.team_id)
+        player_details = get_player_details(player)
         purple_cap.append(BowlerLeaderboardEntry(
             rank=rank,
             player_id=stats.player_id,
@@ -541,7 +581,8 @@ def get_leaderboards(career_id: int, db: Session = Depends(get_db)):
             runs_conceded=stats.runs_conceded,
             economy=stats.economy_rate,
             average=stats.bowling_average,
-            best_bowling=stats.best_bowling
+            best_bowling=stats.best_bowling,
+            **player_details
         ))
 
     # Build Most Sixes
@@ -554,6 +595,7 @@ def get_leaderboards(career_id: int, db: Session = Depends(get_db)):
     for rank, stats in enumerate(sixes_stats, 1):
         player = db.query(Player).get(stats.player_id)
         team = db.query(Team).get(stats.team_id)
+        player_details = get_player_details(player)
         most_sixes.append(SixesLeaderboardEntry(
             rank=rank,
             player_id=stats.player_id,
@@ -562,7 +604,8 @@ def get_leaderboards(career_id: int, db: Session = Depends(get_db)):
             team_short_name=team.short_name if team else "?",
             sixes=stats.sixes,
             runs=stats.runs,
-            matches=stats.matches_batted
+            matches=stats.matches_batted,
+            **player_details
         ))
 
     # Build Most Catches/Dismissals
@@ -575,6 +618,7 @@ def get_leaderboards(career_id: int, db: Session = Depends(get_db)):
     for rank, stats in enumerate(fielding_stats, 1):
         player = db.query(Player).get(stats.player_id)
         team = db.query(Team).get(stats.team_id)
+        player_details = get_player_details(player)
         # Get matches - use max of batted/bowled as they may have only fielded
         matches = max(stats.matches_batted, stats.matches_bowled) if stats.matches_batted or stats.matches_bowled else 0
         most_catches.append(CatchesLeaderboardEntry(
@@ -587,7 +631,8 @@ def get_leaderboards(career_id: int, db: Session = Depends(get_db)):
             stumpings=stats.stumpings,
             run_outs=stats.run_outs,
             total_dismissals=stats.catches + stats.stumpings + stats.run_outs,
-            matches=matches
+            matches=matches,
+            **player_details
         ))
 
     return LeaderboardsResponse(
