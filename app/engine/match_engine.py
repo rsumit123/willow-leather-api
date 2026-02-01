@@ -448,13 +448,11 @@ class MatchEngine:
         bowling_team: list[Player],
         target: Optional[int] = None,
     ) -> InningsState:
-        """Initialize an innings"""
+        """Initialize an innings with batting order as provided (user's selected order)"""
 
-        # Sort batters by batting skill (bowlers bat last)
-        batting_order = sorted(batting_team, key=lambda p: (
-            1 if p.role == PlayerRole.BOWLER else 0,  # Bowlers bat last
-            -p.batting  # Then by batting skill (highest first)
-        ))
+        # Use batting order as provided - this preserves the user's selected batting order
+        # The batting_team list comes in order from PlayingXI positions 1-11
+        batting_order = batting_team
 
         innings = InningsState(
             batting_team=batting_team,
@@ -463,7 +461,7 @@ class MatchEngine:
             batting_order=[p.id for p in batting_order],
         )
 
-        # Set openers
+        # Set openers (positions 1 and 2 from user's batting order)
         innings.striker_id = batting_order[0].id
         innings.non_striker_id = batting_order[1].id
 
