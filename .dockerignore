@@ -24,8 +24,7 @@ __pycache__/
 *.sqlite
 data/
 
-# Scripts/tests
-scripts/
+# Tests (keep scripts for migrations)
 tests/
 
 # Misc
