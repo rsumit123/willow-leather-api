@@ -128,7 +128,7 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
     striker = next((p for p in innings.batting_team if p.id == innings.striker_id), None)
     non_striker = next((p for p in innings.batting_team if p.id == innings.non_striker_id), None)
     bowler = next((p for p in innings.bowling_team if p.id == innings.current_bowler_id), None)
-    
+
     s_brief = None
     if striker:
         s_inn = innings.batter_innings.get(striker.id)
@@ -623,13 +623,17 @@ def play_ball(career_id: int, fixture_id: int, request: BallRequest, db: Session
             is_user_batting = innings.batting_team_id == user_team_id if user_team_id else False
             is_user_bowling = not is_user_batting
 
+            print(f"DEBUG INNINGS CHANGE: user_team_id={user_team_id}, batting_team_id={innings.batting_team_id}, is_user_batting={is_user_batting}, is_user_bowling={is_user_bowling}")
+
             if is_user_bowling:
                 # User must select bowler manually - don't auto-select
                 innings.current_bowler_id = None
+                print(f"DEBUG: User is bowling, NOT auto-selecting bowler. current_bowler_id = None")
             else:
                 # AI bowling - auto-select first bowler
                 bowler = engine.select_bowler(innings)
                 innings.current_bowler_id = bowler.id
+                print(f"DEBUG: AI is bowling, auto-selected bowler: {bowler.name}")
 
             # Return early - don't play a ball, just notify innings changed
             return BallResultResponse(
@@ -905,9 +909,19 @@ def simulate_over_interactive(career_id: int, fixture_id: int, request: Optional
         engine.innings2.context.pitch_type = engine.innings1.context.pitch_type
         engine.current_innings = engine.innings2
 
-        # Select first bowler for 2nd innings
-        bowler = engine.select_bowler(engine.innings2)
-        engine.innings2.current_bowler_id = bowler.id
+        # Check if user is bowling in 2nd innings
+        user_team_id = getattr(engine, 'user_team_id', None)
+        is_user_batting = engine.innings2.batting_team_id == user_team_id if user_team_id else False
+        is_user_bowling = not is_user_batting
+
+        if is_user_bowling:
+            # User must select bowler manually - don't auto-select
+            engine.innings2.current_bowler_id = None
+        else:
+            # AI bowling - auto-select first bowler
+            bowler = engine.select_bowler(engine.innings2)
+            engine.innings2.current_bowler_id = bowler.id
+
         innings_just_changed = True
     elif innings.is_innings_complete and innings == engine.innings2:
         winner_id, margin = _finalize_match_interactive(engine, fixture, db)
@@ -949,9 +963,19 @@ def simulate_innings_interactive(career_id: int, fixture_id: int, db: Session = 
         engine.innings2.context.pitch_type = engine.innings1.context.pitch_type
         engine.current_innings = engine.innings2
 
-        # Select first bowler for 2nd innings
-        bowler = engine.select_bowler(engine.innings2)
-        engine.innings2.current_bowler_id = bowler.id
+        # Check if user is bowling in 2nd innings
+        user_team_id = getattr(engine, 'user_team_id', None)
+        is_user_batting = engine.innings2.batting_team_id == user_team_id if user_team_id else False
+        is_user_bowling = not is_user_batting
+
+        if is_user_bowling:
+            # User must select bowler manually - don't auto-select
+            engine.innings2.current_bowler_id = None
+        else:
+            # AI bowling - auto-select first bowler
+            bowler = engine.select_bowler(engine.innings2)
+            engine.innings2.current_bowler_id = bowler.id
+
         innings_just_changed = True
     elif innings.is_innings_complete and innings == engine.innings2:
         winner_id, margin = _finalize_match_interactive(engine, fixture, db)
