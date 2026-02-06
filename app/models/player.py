@@ -2,6 +2,7 @@ from typing import Optional
 from sqlalchemy import String, Integer, Float, ForeignKey, Enum, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
+import json
 from app.database import Base
 
 
@@ -84,9 +85,35 @@ class Player(Base):
     team_id: Mapped[Optional[int]] = mapped_column(ForeignKey("teams.id"), nullable=True)
     team: Mapped["Team"] = relationship("Team", back_populates="players")
 
+    # DNA attributes (v2 engine)
+    batting_dna_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON BatterDNA
+    bowler_dna_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON PacerDNA/SpinnerDNA
+
     # Auction
     base_price: Mapped[int] = mapped_column(Integer, default=2000000)  # In INR
     sold_price: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    @property
+    def batting_dna(self):
+        """Deserialize BatterDNA from JSON."""
+        if not self.batting_dna_json:
+            return None
+        try:
+            from app.engine.dna import BatterDNA
+            return BatterDNA.from_dict(json.loads(self.batting_dna_json))
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    @property
+    def bowler_dna(self):
+        """Deserialize PacerDNA or SpinnerDNA from JSON."""
+        if not self.bowler_dna_json:
+            return None
+        try:
+            from app.engine.dna import bowler_dna_from_dict
+            return bowler_dna_from_dict(json.loads(self.bowler_dna_json))
+        except (json.JSONDecodeError, TypeError):
+            return None
 
     @property
     def overall_rating(self) -> int:

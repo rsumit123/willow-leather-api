@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.team import Team
 from app.models.career import Season, Fixture, TeamSeasonStats, FixtureType, FixtureStatus, SeasonPhase, PlayerSeasonStats
 from app.models.match import Match, MatchStatus
-from app.engine.match_engine import MatchEngine
+from app.engine.match_engine_v2 import MatchEngineV2 as MatchEngine
 
 
 @dataclass

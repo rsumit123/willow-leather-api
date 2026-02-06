@@ -11,10 +11,11 @@ from app.models.player import Player, PlayerRole
 from app.models.user import User
 from app.models.match import Match, MatchStatus
 from app.models.playing_xi import PlayingXI
-from app.engine.match_engine import (
-    MatchEngine, InningsState, BallOutcome,
+from app.engine.match_engine_v2 import (
+    MatchEngineV2 as MatchEngine, InningsState, BallOutcome,
     BatterState, BowlerState, BatterInnings, BowlerSpell
 )
+from app.engine.dna import PITCHES
 from app.engine.season_engine import SeasonEngine
 from app.auth.utils import get_current_user
 from app.api.schemas import (
@@ -559,18 +560,23 @@ def start_match(
 
     team1_bats_first = batting_first == team1
 
+    # Select pitch for this match
+    pitch = random.choice(list(PITCHES.values()))
+
     engine.innings1 = engine.setup_innings(
         team1_players if team1_bats_first else team2_players,
-        team2_players if team1_bats_first else team1_players
+        team2_players if team1_bats_first else team1_players,
+        pitch=pitch,
     )
     # Add batting_team_id for winner determination
     engine.innings1.batting_team_id = batting_first.id
 
-    # Store user team id for is_user_batting calculation
+    # Store user team id and pitch for is_user_batting calculation and 2nd innings
     engine.user_team_id = career.user_team_id
+    engine.match_pitch = pitch
 
-    # Initialize pitch
-    engine.innings1.context.pitch_type = random.choice(["green_top", "dust_bowl", "flat_deck"])
+    # Set context pitch_type for backwards compatibility
+    engine.innings1.context.pitch_type = pitch.name
 
     engine.current_innings = engine.innings1
 
@@ -637,9 +643,13 @@ def play_ball(
             batting_team_players = _get_playing_xi(batting_team, season.id, db)
             bowling_team_players = _get_playing_xi(bowling_team, season.id, db)
 
-            engine.innings2 = engine.setup_innings(batting_team_players, bowling_team_players, target=target)
+            match_pitch = getattr(engine, 'match_pitch', engine.innings1.pitch)
+            engine.innings2 = engine.setup_innings(
+                batting_team_players, bowling_team_players,
+                target=target, pitch=match_pitch, is_second_innings=True
+            )
             engine.innings2.batting_team_id = fixture.team2_id if team1_bats_first else fixture.team1_id
-            engine.innings2.context.pitch_type = engine.innings1.context.pitch_type # Same pitch
+            engine.innings2.context.pitch_type = match_pitch.name
             engine.current_innings = engine.innings2
             innings = engine.innings2
 
@@ -717,6 +727,10 @@ def play_ball(
         b_state = innings.batter_states.setdefault(striker.id, BatterState(player_id=striker.id))
         b_state.balls_faced += 1
         b_state.is_settled = b_state.balls_faced > 15
+
+        # Track balls faced for v2 jaffa rate
+        innings.balls_faced[striker.id] = innings.balls_faced.get(striker.id, 0) + 1
+
         if outcome.is_boundary:
             b_state.recent_outcomes.append("4/6")
         else:
@@ -785,7 +799,10 @@ def play_ball(
         b_state = innings.bowler_states.setdefault(bowler.id, BowlerState(player_id=bowler.id))
         b_state.consecutive_overs += 1
         b_state.is_tired = b_state.consecutive_overs > 4
-        
+
+        # Track bowler overs for v2 fatigue
+        innings.bowler_overs_count[bowler.id] = innings.bowler_overs_count.get(bowler.id, 0) + 1
+
         # Reset current bowler so next over needs selection
         innings.current_bowler_id = None
         
@@ -1043,9 +1060,13 @@ def simulate_over_interactive(
         batting_team_players = _get_playing_xi(batting_team, season.id, db)
         bowling_team_players = _get_playing_xi(bowling_team, season.id, db)
 
-        engine.innings2 = engine.setup_innings(batting_team_players, bowling_team_players, target=target)
+        match_pitch = getattr(engine, 'match_pitch', engine.innings1.pitch)
+        engine.innings2 = engine.setup_innings(
+            batting_team_players, bowling_team_players,
+            target=target, pitch=match_pitch, is_second_innings=True
+        )
         engine.innings2.batting_team_id = fixture.team2_id if team1_bats_first else fixture.team1_id
-        engine.innings2.context.pitch_type = engine.innings1.context.pitch_type
+        engine.innings2.context.pitch_type = match_pitch.name
         engine.current_innings = engine.innings2
 
         # Check if user is bowling in 2nd innings
@@ -1103,9 +1124,13 @@ def simulate_innings_interactive(
         batting_team_players = _get_playing_xi(batting_team, season.id, db)
         bowling_team_players = _get_playing_xi(bowling_team, season.id, db)
 
-        engine.innings2 = engine.setup_innings(batting_team_players, bowling_team_players, target=target)
+        match_pitch = getattr(engine, 'match_pitch', engine.innings1.pitch)
+        engine.innings2 = engine.setup_innings(
+            batting_team_players, bowling_team_players,
+            target=target, pitch=match_pitch, is_second_innings=True
+        )
         engine.innings2.batting_team_id = fixture.team2_id if team1_bats_first else fixture.team1_id
-        engine.innings2.context.pitch_type = engine.innings1.context.pitch_type
+        engine.innings2.context.pitch_type = match_pitch.name
         engine.current_innings = engine.innings2
 
         # Check if user is bowling in 2nd innings

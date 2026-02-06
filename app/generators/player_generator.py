@@ -2,6 +2,7 @@ import random
 import json
 from faker import Faker
 from app.models.player import Player, PlayerRole, BowlingType, BattingStyle, PlayerTrait, BattingIntent
+from app.engine.dna import BatterDNA, PacerDNA, SpinnerDNA, clamp
 from app.database import get_session
 
 # Initialize Faker instances - use en_US as fallback for unavailable locales
@@ -280,6 +281,101 @@ class PlayerGenerator:
                 player.fielding = min(100, player.fielding + boost_field)
         return player
 
+    @staticmethod
+    def _gen_dna_attr(base: int, variance: int = 12, minimum: int = 5) -> int:
+        """Generate a DNA attribute with variance, clamped 5-100."""
+        return clamp(base + random.randint(-variance, variance), minimum, 100)
+
+    @classmethod
+    def _apply_weaknesses(cls, dna: BatterDNA, num_weaknesses: int = None):
+        """Force 1-2 weak attributes on every batter."""
+        if num_weaknesses is None:
+            num_weaknesses = random.choices([1, 2], weights=[55, 45])[0]
+
+        candidates = ["vs_pace", "vs_bounce", "vs_spin", "vs_deception", "off_side", "leg_side"]
+        weak_stats = random.sample(candidates, num_weaknesses)
+
+        avg_val = dna.avg()
+        for stat in weak_stats:
+            reduction = random.randint(15, 25)
+            new_val = clamp(int(avg_val - reduction), 10, 100)
+            setattr(dna, stat, new_val)
+
+        dna.weaknesses = weak_stats
+
+    @classmethod
+    def _generate_batting_dna(cls, base: int, role: PlayerRole, power_attr: int) -> BatterDNA:
+        """Generate BatterDNA based on role and tier base value."""
+        gen = cls._gen_dna_attr
+
+        if role == PlayerRole.BATSMAN:
+            dna = BatterDNA(
+                vs_pace=gen(base + 5, 10),
+                vs_bounce=gen(base, 12),
+                vs_spin=gen(base, 12),
+                vs_deception=gen(base - 5, 15),
+                off_side=gen(base, 12),
+                leg_side=gen(base, 12),
+                power=gen(power_attr, 10),
+            )
+            cls._apply_weaknesses(dna)
+        elif role == PlayerRole.BOWLER:
+            dna = BatterDNA(
+                vs_pace=gen(28, 10),
+                vs_bounce=gen(25, 10),
+                vs_spin=gen(25, 10),
+                vs_deception=gen(22, 10),
+                off_side=gen(25, 10),
+                leg_side=gen(28, 10),
+                power=gen(25, 10),
+            )
+        elif role == PlayerRole.ALL_ROUNDER:
+            dna = BatterDNA(
+                vs_pace=gen(base, 12),
+                vs_bounce=gen(base - 3, 12),
+                vs_spin=gen(base - 3, 12),
+                vs_deception=gen(base - 5, 12),
+                off_side=gen(base - 2, 12),
+                leg_side=gen(base - 2, 12),
+                power=gen(power_attr - 5, 15),
+            )
+            cls._apply_weaknesses(dna, num_weaknesses=1)
+        else:  # WICKET_KEEPER
+            dna = BatterDNA(
+                vs_pace=gen(base, 12),
+                vs_bounce=gen(base - 3, 12),
+                vs_spin=gen(base + 2, 12),
+                vs_deception=gen(base - 2, 12),
+                off_side=gen(base, 12),
+                leg_side=gen(base + 3, 12),
+                power=gen(power_attr - 5, 15),
+            )
+            cls._apply_weaknesses(dna, num_weaknesses=1)
+
+        return dna
+
+    @classmethod
+    def _generate_bowler_dna(cls, base: int, bowling_type: BowlingType, pace_or_spin: int, accuracy: int, variation: int):
+        """Generate PacerDNA or SpinnerDNA based on bowling type."""
+        gen = cls._gen_dna_attr
+
+        if bowling_type in (BowlingType.PACE, BowlingType.MEDIUM):
+            speed_base = {BowlingType.PACE: 142, BowlingType.MEDIUM: 132}.get(bowling_type, 135)
+            return PacerDNA(
+                speed=clamp(speed_base + random.randint(-6, 6), 120, 155),
+                swing=gen(base, 15),
+                bounce=gen(base, 15),
+                control=gen(base + 5, 10),
+            )
+        else:
+            # All spin types
+            return SpinnerDNA(
+                turn=gen(base + 5, 12),
+                flight=gen(base, 15),
+                variation=gen(base, 15),
+                control=gen(base + 5, 10),
+            )
+
     @classmethod
     def generate_player(cls, role: PlayerRole = None, nationality: str = None, tier: str = "average") -> Player:
         """
@@ -398,6 +494,15 @@ class PlayerGenerator:
         }
         base_price = base_prices.get(tier, 2000000)
 
+        # Generate DNA for v2 engine
+        batting_dna = cls._generate_batting_dna(base, role, power)
+        batting_dna_json = json.dumps(batting_dna.to_dict())
+
+        bowler_dna_json = None
+        if role in [PlayerRole.BOWLER, PlayerRole.ALL_ROUNDER]:
+            bowler_dna = cls._generate_bowler_dna(base, bowling_type, pace_or_spin, accuracy, variation)
+            bowler_dna_json = json.dumps(bowler_dna.to_dict())
+
         # Create player
         player = Player(
             name=faker_instance.name_male(),
@@ -423,6 +528,8 @@ class PlayerGenerator:
             traits=traits_json,
             batting_intent=batting_intent.value,
             base_price=base_price,
+            batting_dna_json=batting_dna_json,
+            bowler_dna_json=bowler_dna_json,
         )
 
         # Ensure minimum OVR of 55
