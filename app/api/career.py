@@ -38,6 +38,16 @@ def parse_traits(traits_json: Optional[str]) -> List[str]:
         return []
 
 
+def _get_dna_dicts(player: Player) -> dict:
+    """Get batting_dna and bowling_dna as dicts for PlayerResponse."""
+    batting_dna = player.batting_dna
+    bowling_dna = player.bowler_dna
+    return {
+        "batting_dna": batting_dna.to_dict() if batting_dna else None,
+        "bowling_dna": bowling_dna.to_dict() if bowling_dna else None,
+    }
+
+
 def get_db():
     db = get_session()
     try:
@@ -222,6 +232,7 @@ def get_team_squad(
 
     player_responses = []
     for p in players:
+        dna = _get_dna_dicts(p)
         player_responses.append(PlayerResponse(
             id=p.id,
             name=p.name,
@@ -241,6 +252,8 @@ def get_team_squad(
             power=p.power,
             traits=parse_traits(p.traits),
             batting_intent=getattr(p, 'batting_intent', 'accumulator'),
+            batting_dna=dna["batting_dna"],
+            bowling_dna=dna["bowling_dna"],
         ))
 
     return SquadResponse(
@@ -279,6 +292,7 @@ def get_playing_xi(
     players = []
     for entry in xi_entries:
         p = entry.player
+        dna = _get_dna_dicts(p)
         players.append(PlayingXIPlayerResponse(
             id=p.id,
             name=p.name,
@@ -299,6 +313,8 @@ def get_playing_xi(
             traits=parse_traits(p.traits),
             batting_intent=getattr(p, 'batting_intent', 'accumulator'),
             position=entry.position,
+            batting_dna=dna["batting_dna"],
+            bowling_dna=dna["bowling_dna"],
         ))
 
     # Validate if we have players
@@ -390,6 +406,7 @@ def set_playing_xi(
     player_responses = []
     for entry in xi_entries:
         p = entry.player
+        dna = _get_dna_dicts(p)
         player_responses.append(PlayingXIPlayerResponse(
             id=p.id,
             name=p.name,
@@ -410,6 +427,8 @@ def set_playing_xi(
             traits=parse_traits(p.traits),
             batting_intent=getattr(p, 'batting_intent', 'accumulator'),
             position=entry.position,
+            batting_dna=dna["batting_dna"],
+            bowling_dna=dna["bowling_dna"],
         ))
 
     return PlayingXIResponse(

@@ -77,6 +77,8 @@ class PlayerResponse(PlayerBase):
     form: float
     batting_style: str
     bowling_type: str
+    batting_dna: Optional[dict] = None  # BatterDNA as dict
+    bowling_dna: Optional[dict] = None  # BowlerDNA (Pacer/Spinner) as dict
 
     class Config:
         from_attributes = True
@@ -276,6 +278,46 @@ class MatchResultResponse(BaseModel):
     innings2_score: str
 
 
+# DNA Schemas (v2 engine)
+class BatterDNABrief(BaseModel):
+    vs_pace: int = 50
+    vs_bounce: int = 50
+    vs_spin: int = 50
+    vs_deception: int = 50
+    off_side: int = 50
+    leg_side: int = 50
+    power: int = 50
+    weaknesses: list[str] = []
+
+
+class BowlerDNABrief(BaseModel):
+    type: str = "pacer"  # "pacer" or "spinner"
+    speed: Optional[int] = None
+    swing: Optional[int] = None
+    bounce: Optional[int] = None
+    turn: Optional[int] = None
+    flight: Optional[int] = None
+    variation: Optional[int] = None
+    control: Optional[int] = None
+
+
+class DeliveryOptionResponse(BaseModel):
+    name: str
+    display_name: str
+    description: str
+    exec_difficulty: int
+    targets_weakness: Optional[str] = None  # e.g. "vs_bounce" if batter is weak there
+
+
+class PitchInfoResponse(BaseModel):
+    name: str
+    display_name: str
+    pace_assist: int
+    spin_assist: int
+    bounce: int
+    deterioration: int
+
+
 # Interactive Match Schemas
 class PlayerStateBrief(BaseModel):
     id: int
@@ -288,6 +330,7 @@ class PlayerStateBrief(BaseModel):
     is_settled: bool = False
     is_on_fire: bool = False
     traits: list[str] = []
+    batting_dna: Optional[BatterDNABrief] = None
 
 
 class BowlerStateBrief(BaseModel):
@@ -300,6 +343,7 @@ class BowlerStateBrief(BaseModel):
     is_tired: bool = False
     has_confidence: bool = False
     traits: list[str] = []
+    bowling_dna: Optional[BowlerDNABrief] = None
 
 
 class MatchStateResponse(BaseModel):
@@ -340,6 +384,11 @@ class MatchStateResponse(BaseModel):
     # Bowler change indicator
     can_change_bowler: bool = False
 
+    # v2 engine additions
+    pitch_info: Optional[PitchInfoResponse] = None
+    available_deliveries: Optional[list[DeliveryOptionResponse]] = None
+    last_delivery_name: Optional[str] = None
+
 
 # Bowler Selection Schemas
 class AvailableBowlerResponse(BaseModel):
@@ -354,6 +403,8 @@ class AvailableBowlerResponse(BaseModel):
     can_bowl: bool
     reason: Optional[str] = None
     traits: list[str] = []
+    bowling_dna: Optional[BowlerDNABrief] = None
+    repertoire: list[str] = []  # delivery names this bowler can throw
 
 
 class AvailableBowlersResponse(BaseModel):
@@ -367,6 +418,7 @@ class SelectBowlerRequest(BaseModel):
 
 class BallRequest(BaseModel):
     aggression: str  # defend, balanced, attack
+    delivery_type: Optional[str] = None  # e.g. "bouncer", "yorker" — only used when user is bowling
 
 
 class TossResultResponse(BaseModel):
@@ -389,6 +441,8 @@ class BallResultResponse(BaseModel):
     is_six: bool
     commentary: str
     match_state: MatchStateResponse
+    delivery_name: Optional[str] = None
+    contact_quality: Optional[str] = None
 
 
 # Standing Schemas

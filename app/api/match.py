@@ -13,9 +13,11 @@ from app.models.match import Match, MatchStatus
 from app.models.playing_xi import PlayingXI
 from app.engine.match_engine_v2 import (
     MatchEngineV2 as MatchEngine, InningsState, BallOutcome,
-    BatterState, BowlerState, BatterInnings, BowlerSpell
+    BatterState, BowlerState, BatterInnings, BowlerSpell,
+    get_repertoire,
 )
-from app.engine.dna import PITCHES
+from app.engine.dna import PITCHES, PacerDNA, SpinnerDNA
+from app.engine.deliveries import PACER_DELIVERIES, SPINNER_DELIVERIES
 from app.engine.season_engine import SeasonEngine
 from app.auth.utils import get_current_user
 from app.api.schemas import (
@@ -23,7 +25,8 @@ from app.api.schemas import (
     PlayerStateBrief, BowlerStateBrief, TossResultResponse, StartMatchRequest,
     AvailableBowlerResponse, AvailableBowlersResponse, SelectBowlerRequest,
     BatterScorecardEntry, BowlerScorecardEntry, ExtrasBreakdown,
-    InningsScorecard, ManOfTheMatch, LiveScorecardResponse, MatchCompletionResponse
+    InningsScorecard, ManOfTheMatch, LiveScorecardResponse, MatchCompletionResponse,
+    BatterDNABrief, BowlerDNABrief, DeliveryOptionResponse, PitchInfoResponse,
 )
 
 # Store toss results for pending matches
@@ -48,6 +51,91 @@ def _parse_traits(traits_json: Optional[str]) -> List[str]:
         return json.loads(traits_json)
     except (json.JSONDecodeError, TypeError):
         return []
+
+
+def _player_batting_dna_brief(player: Player) -> Optional[BatterDNABrief]:
+    """Convert player's batting DNA to API schema."""
+    dna = player.batting_dna
+    if dna is None:
+        return None
+    return BatterDNABrief(
+        vs_pace=dna.vs_pace,
+        vs_bounce=dna.vs_bounce,
+        vs_spin=dna.vs_spin,
+        vs_deception=dna.vs_deception,
+        off_side=dna.off_side,
+        leg_side=dna.leg_side,
+        power=dna.power,
+        weaknesses=dna.weaknesses or [],
+    )
+
+
+def _player_bowling_dna_brief(player: Player) -> Optional[BowlerDNABrief]:
+    """Convert player's bowling DNA to API schema."""
+    dna = player.bowler_dna
+    if dna is None:
+        return None
+    if isinstance(dna, PacerDNA):
+        return BowlerDNABrief(
+            type="pacer",
+            speed=dna.speed,
+            swing=dna.swing,
+            bounce=dna.bounce,
+            control=dna.control,
+        )
+    if isinstance(dna, SpinnerDNA):
+        return BowlerDNABrief(
+            type="spinner",
+            turn=dna.turn,
+            flight=dna.flight,
+            variation=dna.variation,
+            control=dna.control,
+        )
+    return None
+
+
+def _get_pitch_info(pitch) -> Optional[PitchInfoResponse]:
+    """Convert PitchDNA to API response."""
+    if pitch is None:
+        return None
+    display_names = {
+        "green_seamer": "Green Seamer",
+        "dust_bowl": "Dust Bowl",
+        "flat_deck": "Flat Deck",
+        "bouncy_track": "Bouncy Track",
+        "slow_turner": "Slow Turner",
+        "balanced": "Balanced",
+    }
+    return PitchInfoResponse(
+        name=pitch.name,
+        display_name=display_names.get(pitch.name, pitch.name.replace("_", " ").title()),
+        pace_assist=pitch.pace_assist,
+        spin_assist=pitch.spin_assist,
+        bounce=pitch.bounce,
+        deterioration=pitch.deterioration,
+    )
+
+
+def _get_delivery_options(bowler: Player, batter: Player) -> List[DeliveryOptionResponse]:
+    """Get available deliveries for a bowler, with matchup hints for current batter."""
+    repertoire = get_repertoire(bowler)
+    batter_dna = batter.batting_dna
+    weaknesses = batter_dna.weaknesses if batter_dna else []
+
+    options = []
+    for d in repertoire:
+        targets_weakness = None
+        if d.targets_stat and d.targets_stat in weaknesses:
+            targets_weakness = d.targets_stat
+
+        options.append(DeliveryOptionResponse(
+            name=d.name,
+            display_name=d.display_name,
+            description=d.description,
+            exec_difficulty=d.exec_difficulty,
+            targets_weakness=targets_weakness,
+        ))
+    return options
 
 
 def _store_completed_match(fixture_id: int, engine: MatchEngine, winner_id: Optional[int], margin: str):
@@ -140,6 +228,9 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
     non_striker = next((p for p in innings.batting_team if p.id == innings.non_striker_id), None)
     bowler = next((p for p in innings.bowling_team if p.id == innings.current_bowler_id), None)
 
+    # Include DNA data when user is bowling (for scouting)
+    is_user_bowling = not is_user_batting
+
     s_brief = None
     if striker:
         s_inn = innings.batter_innings.get(striker.id)
@@ -154,7 +245,8 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
             is_out=s_inn.is_out if s_inn else False,
             is_settled=s_state.is_settled if s_state else False,
             is_on_fire=s_state.is_on_fire if s_state else False,
-            traits=_parse_traits(striker.traits)
+            traits=_parse_traits(striker.traits),
+            batting_dna=_player_batting_dna_brief(striker) if is_user_bowling else None,
         )
 
     ns_brief = None
@@ -171,7 +263,8 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
             is_out=ns_inn.is_out if ns_inn else False,
             is_settled=ns_state.is_settled if ns_state else False,
             is_on_fire=ns_state.is_on_fire if ns_state else False,
-            traits=_parse_traits(non_striker.traits)
+            traits=_parse_traits(non_striker.traits),
+            batting_dna=_player_batting_dna_brief(non_striker) if is_user_bowling else None,
         )
 
     b_brief = None
@@ -187,7 +280,8 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
             wickets=b_spell.wickets if b_spell else 0,
             is_tired=b_state.is_tired if b_state else False,
             has_confidence=b_state.has_confidence if b_state else False,
-            traits=_parse_traits(bowler.traits)
+            traits=_parse_traits(bowler.traits),
+            bowling_dna=_player_bowling_dna_brief(bowler) if is_user_bowling else None,
         )
 
     last_ball = innings.this_over[-1] if innings.this_over else None
@@ -221,8 +315,22 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
             margin = "Match tied!"
 
     # User can change bowler at the start of an over when they are fielding
-    is_user_bowling = not is_user_batting
     can_change_bowler = innings.balls == 0 and is_user_bowling and status == "in_progress"
+
+    # Pitch info (always included)
+    pitch_info = _get_pitch_info(innings.pitch) if hasattr(innings, 'pitch') else None
+
+    # Available deliveries (only when user is bowling and has a bowler + striker)
+    available_deliveries = None
+    if is_user_bowling and bowler and striker and status == "in_progress":
+        available_deliveries = _get_delivery_options(bowler, striker)
+
+    # Last delivery name from the most recent ball outcome
+    last_delivery_name = None
+    if innings.this_over:
+        last_ball_outcome = innings.this_over[-1]
+        if hasattr(last_ball_outcome, 'delivery_name'):
+            last_delivery_name = last_ball_outcome.delivery_name
 
     return MatchStateResponse(
         innings=1 if engine.current_innings == engine.innings1 else 2,
@@ -250,7 +358,10 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
         is_user_batting=is_user_batting,
         user_team_name=user_team.short_name if user_team else "",
         innings_just_changed=innings_just_changed,
-        can_change_bowler=can_change_bowler
+        can_change_bowler=can_change_bowler,
+        pitch_info=pitch_info,
+        available_deliveries=available_deliveries,
+        last_delivery_name=last_delivery_name,
     )
 
 def _get_outcome_string(outcome: BallOutcome) -> str:
@@ -706,8 +817,13 @@ def play_ball(
     
     fielders = [p for p in innings.bowling_team if p.id != bowler.id]
 
+    # Determine if user is bowling (only then respect delivery_type selection)
+    user_team_id_for_ball = getattr(engine, 'user_team_id', None)
+    is_user_batting_for_ball = innings.batting_team_id == user_team_id_for_ball if user_team_id_for_ball else False
+    delivery_type = request.delivery_type if (not is_user_batting_for_ball and request.delivery_type) else None
+
     # Simulate ball
-    outcome = engine._simulate_ball(striker, bowler, innings, fielders, aggression=request.aggression)
+    outcome = engine._simulate_ball(striker, bowler, innings, fielders, aggression=request.aggression, delivery_type=delivery_type)
     innings.this_over.append(outcome)
     
     # Update states (similar to simulate_over but for one ball)
@@ -824,7 +940,9 @@ def play_ball(
         is_boundary=outcome.is_boundary,
         is_six=outcome.is_six,
         commentary=outcome.commentary,
-        match_state=_get_match_state_response(engine, fixture, db, innings_just_changed=innings_just_changed)
+        match_state=_get_match_state_response(engine, fixture, db, innings_just_changed=innings_just_changed),
+        delivery_name=getattr(outcome, 'delivery_name', None),
+        contact_quality=getattr(outcome, 'contact_quality', None),
     )
 
 def _update_player_season_stats(engine: MatchEngine, fixture: Fixture, db: Session):
@@ -1199,6 +1317,9 @@ def get_available_bowlers(
             can_bowl = False
             reason = "Bowled last over"
 
+        # Build repertoire list (delivery names this bowler can throw)
+        bowler_repertoire = [d.name for d in get_repertoire(b)]
+
         available_bowlers.append(AvailableBowlerResponse(
             id=b.id,
             name=b.name,
@@ -1210,7 +1331,9 @@ def get_available_bowlers(
             economy=round(economy, 2),
             can_bowl=can_bowl,
             reason=reason,
-            traits=_parse_traits(b.traits)
+            traits=_parse_traits(b.traits),
+            bowling_dna=_player_bowling_dna_brief(b),
+            repertoire=bowler_repertoire,
         ))
 
     return AvailableBowlersResponse(
@@ -1268,6 +1391,39 @@ def select_bowler_manual(
         innings.bowler_states[bowler.id] = BowlerState(player_id=bowler.id)
 
     return _get_match_state_response(engine, fixture, db)
+
+
+@router.get("/{career_id}/match/{fixture_id}/scout/{player_id}")
+def scout_player(
+    career_id: int,
+    fixture_id: int,
+    player_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get full DNA scouting report for an opponent batter during a match."""
+    verify_career_ownership(career_id, current_user.id, db)
+    if fixture_id not in active_matches:
+        raise HTTPException(status_code=404, detail="Active match session not found")
+
+    engine = active_matches[fixture_id]
+    innings = engine.current_innings
+    if not innings:
+        raise HTTPException(status_code=400, detail="Match not initialized")
+
+    # Find the player in the batting team (opponent)
+    player = next((p for p in innings.batting_team if p.id == player_id), None)
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found in current batting lineup")
+
+    batting_dna = _player_batting_dna_brief(player)
+    return {
+        "player_id": player.id,
+        "name": player.name,
+        "role": player.role.value if hasattr(player.role, 'value') else str(player.role),
+        "batting": player.batting,
+        "batting_dna": batting_dna.model_dump() if batting_dna else None,
+    }
 
 
 @router.get("/{career_id}/match/{fixture_id}/scorecard")

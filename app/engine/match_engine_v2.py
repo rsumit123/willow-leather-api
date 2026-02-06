@@ -676,6 +676,7 @@ class MatchEngineV2:
         bowler: Player,
         innings: InningsState,
         approach: str = "rotate",
+        delivery_type: str = None,
     ) -> BallOutcome:
         """Full v2 pipeline: jaffa → execution → matchup → compression → Gaussian → resolve."""
         overs = innings.overs
@@ -706,9 +707,16 @@ class MatchEngineV2:
         fatigue = get_fatigue(bowler_overs)
         sigma = get_sigma(overs)
 
-        # Get delivery repertoire and choose
+        # Get delivery repertoire and choose (or use user-selected delivery)
         repertoire = get_repertoire(bowler)
-        delivery = choose_optimal_delivery(repertoire, batter)
+        if delivery_type:
+            # User selected a specific delivery — find it in repertoire or all deliveries
+            all_deliveries = {**PACER_DELIVERIES, **SPINNER_DELIVERIES}
+            delivery = all_deliveries.get(delivery_type)
+            if delivery is None or delivery not in repertoire:
+                delivery = choose_optimal_delivery(repertoire, batter)
+        else:
+            delivery = choose_optimal_delivery(repertoire, batter)
 
         outcome = BallOutcome(delivery_name=delivery.name)
 
@@ -793,10 +801,11 @@ class MatchEngineV2:
         bowler: Player,
         aggression: str,
         innings_state: InningsState,
+        delivery_type: str = None,
     ) -> BallOutcome:
         """API-compatible ball calculation — maps aggression and delegates to v2 pipeline."""
         approach = map_aggression(aggression, innings_state)
-        return self._simulate_ball_v2(batter, bowler, innings_state, approach)
+        return self._simulate_ball_v2(batter, bowler, innings_state, approach, delivery_type=delivery_type)
 
     def _simulate_ball(
         self,
@@ -805,6 +814,7 @@ class MatchEngineV2:
         innings_state: InningsState,
         fielders: list,
         aggression: str = "balanced",
+        delivery_type: str = None,
     ) -> BallOutcome:
         """Drop-in replacement for v1's _simulate_ball (called by match.py play_ball)."""
         # Check extras first
@@ -836,7 +846,7 @@ class MatchEngineV2:
                 commentary=f"No ball! {runs + 1} runs"
             )
 
-        return self.calculate_ball_outcome(batter, bowler, aggression, innings_state)
+        return self.calculate_ball_outcome(batter, bowler, aggression, innings_state, delivery_type=delivery_type)
 
     def select_bowler(self, innings: InningsState) -> Player:
         """Select next bowler (cannot be same as last over, max 4 overs)."""
