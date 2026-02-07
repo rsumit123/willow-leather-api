@@ -39,6 +39,8 @@ def parse_traits(traits_json: Optional[str]) -> List[str]:
 
 def player_to_brief(player: Player) -> PlayerBrief:
     """Convert a Player model to PlayerBrief with all fields"""
+    batting_dna = player.batting_dna
+    bowling_dna = player.bowler_dna
     return PlayerBrief(
         id=player.id,
         name=player.name,
@@ -53,6 +55,8 @@ def player_to_brief(player: Player) -> PlayerBrief:
         power=player.power,
         traits=parse_traits(player.traits),
         batting_intent=getattr(player, 'batting_intent', 'accumulator'),
+        batting_dna=batting_dna.to_dict() if batting_dna else None,
+        bowling_dna=bowling_dna.to_dict() if bowling_dna else None,
     )
 
 

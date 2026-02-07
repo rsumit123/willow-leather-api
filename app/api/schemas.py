@@ -98,6 +98,8 @@ class PlayerBrief(BaseModel):
     power: int = 50  # Power for batters
     traits: List[str] = []  # Player traits
     batting_intent: str = "accumulator"  # Batting intent
+    batting_dna: Optional[dict] = None  # BatterDNA as dict (optional)
+    bowling_dna: Optional[dict] = None  # BowlerDNA as dict (optional)
 
     class Config:
         from_attributes = True
