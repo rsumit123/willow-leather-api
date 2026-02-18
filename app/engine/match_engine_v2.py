@@ -162,6 +162,10 @@ class InningsState:
     bowler_overs_count: dict = field(default_factory=dict) # player_id -> int
     partnership_runs: int = 0
 
+    # Matchup tracking for post-match analysis
+    # Key: (batter_id, bowler_id) -> {balls, runs, fours, sixes, dots, dismissal_type, delivery_type}
+    matchup_data: dict = field(default_factory=dict)
+
     @property
     def overs_display(self) -> str:
         return f"{self.overs}.{self.balls}"
@@ -744,9 +748,13 @@ class MatchEngineV2:
         # Step 2: Bowler attack rating
         raw_attack = bowler_attack_rating(bowler_dna, delivery, innings.pitch, overs,
                                           fatigue, innings.is_second_innings)
+        # Apply bowler form (0.7-1.3 multiplier)
+        raw_attack *= getattr(bowler, 'form', 1.0)
 
         # Step 3: Batter skill rating
         raw_skill = batter_skill_rating(batter_dna, delivery) + batter_bonus
+        # Apply batter form (0.7-1.3 multiplier)
+        raw_skill *= getattr(batter, 'form', 1.0)
 
         # Tail-ender floor: only for genuinely weak batters (avg DNA < 40)
         if batter_dna.avg() < 40:
@@ -941,6 +949,25 @@ class MatchEngineV2:
                 if len(b_state.recent_outcomes) >= 3:
                     recent_3 = b_state.recent_outcomes[-3:]
                     b_state.is_on_fire = recent_3.count("4/6") >= 2
+
+                # Track batter-vs-bowler matchup data
+                mu_key = (striker.id, bowler.id)
+                if mu_key not in innings.matchup_data:
+                    innings.matchup_data[mu_key] = {
+                        "balls": 0, "runs": 0, "fours": 0, "sixes": 0, "dots": 0,
+                    }
+                mu = innings.matchup_data[mu_key]
+                mu["balls"] += 1
+                mu["runs"] += outcome.runs
+                if outcome.is_boundary and not outcome.is_six:
+                    mu["fours"] += 1
+                if outcome.is_six:
+                    mu["sixes"] += 1
+                if outcome.runs == 0 and not outcome.is_wicket:
+                    mu["dots"] += 1
+                if outcome.is_wicket:
+                    mu["dismissal_type"] = outcome.dismissal_type
+                    mu["delivery_type"] = outcome.delivery_name
 
             # Update bowler spell
             spell = innings.bowler_spells[bowler.id]

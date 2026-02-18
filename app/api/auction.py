@@ -55,6 +55,7 @@ def player_to_brief(player: Player) -> PlayerBrief:
         power=player.power,
         traits=parse_traits(player.traits),
         batting_intent=getattr(player, 'batting_intent', 'accumulator'),
+        form=getattr(player, 'form', 1.0),
         batting_dna=batting_dna.to_dict() if batting_dna else None,
         bowling_dna=bowling_dna.to_dict() if bowling_dna else None,
     )

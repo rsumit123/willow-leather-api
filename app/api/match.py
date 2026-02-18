@@ -5,7 +5,7 @@ import random
 import json
 
 from app.database import get_session
-from app.models.career import Career, Fixture, FixtureStatus, FixtureType, Season, SeasonPhase, CareerStatus, PlayerSeasonStats
+from app.models.career import Career, Fixture, FixtureStatus, FixtureType, Season, SeasonPhase, CareerStatus, PlayerSeasonStats, PlayerMatchStats, MatchMatchup
 from app.models.team import Team
 from app.models.player import Player, PlayerRole
 from app.models.user import User
@@ -19,6 +19,7 @@ from app.engine.match_engine_v2 import (
 from app.engine.dna import PITCHES, PacerDNA, SpinnerDNA
 from app.engine.deliveries import PACER_DELIVERIES, SPINNER_DELIVERIES
 from app.engine.season_engine import SeasonEngine
+from app.engine.form_engine import calculate_form_delta, update_player_form
 from app.auth.utils import get_current_user
 from app.api.schemas import (
     MatchStateResponse, BallRequest, BallResultResponse,
@@ -27,6 +28,7 @@ from app.api.schemas import (
     BatterScorecardEntry, BowlerScorecardEntry, ExtrasBreakdown,
     InningsScorecard, ManOfTheMatch, LiveScorecardResponse, MatchCompletionResponse,
     BatterDNABrief, BowlerDNABrief, DeliveryOptionResponse, PitchInfoResponse,
+    MatchMatchupResponse, FormChangeEntry, MatchAnalysisResponse,
 )
 
 # Store toss results for pending matches
@@ -857,6 +859,25 @@ def play_ball(
             recent_3 = b_state.recent_outcomes[-3:]
             b_state.is_on_fire = recent_3.count("4/6") >= 2
 
+        # Track batter-vs-bowler matchup data
+        mu_key = (striker.id, bowler.id)
+        if mu_key not in innings.matchup_data:
+            innings.matchup_data[mu_key] = {
+                "balls": 0, "runs": 0, "fours": 0, "sixes": 0, "dots": 0,
+            }
+        mu = innings.matchup_data[mu_key]
+        mu["balls"] += 1
+        mu["runs"] += outcome.runs
+        if outcome.is_boundary and not outcome.is_six:
+            mu["fours"] += 1
+        if outcome.is_six:
+            mu["sixes"] += 1
+        if outcome.runs == 0 and not outcome.is_wicket:
+            mu["dots"] += 1
+        if outcome.is_wicket:
+            mu["dismissal_type"] = outcome.dismissal_type
+            mu["delivery_type"] = outcome.delivery_name
+
     # Update bowler spell
     if bowler.id not in innings.bowler_spells:
         innings.bowler_spells[bowler.id] = BowlerSpell(player=bowler)
@@ -1049,6 +1070,175 @@ def _update_player_season_stats(engine: MatchEngine, fixture: Fixture, db: Sessi
                     fielder_stats.run_outs += 1
 
 
+def _save_player_match_stats(engine: MatchEngine, fixture: Fixture, match: Match, db: Session) -> dict:
+    """Save per-match individual player stats. Returns {player_id: PlayerMatchStats} for form calculation."""
+    season = db.query(Season).get(fixture.season_id)
+    player_stats_map = {}  # player_id -> PlayerMatchStats
+
+    for innings in [engine.innings1, engine.innings2]:
+        if not innings:
+            continue
+
+        batting_team_id = innings.batting_team_id
+        bowling_team_id = fixture.team2_id if batting_team_id == fixture.team1_id else fixture.team1_id
+
+        # Batting stats
+        for player_id, batter_innings in innings.batter_innings.items():
+            if player_id not in player_stats_map:
+                player_stats_map[player_id] = PlayerMatchStats(
+                    match_id=match.id,
+                    fixture_id=fixture.id,
+                    season_id=season.id,
+                    player_id=player_id,
+                    team_id=batting_team_id,
+                )
+            stats = player_stats_map[player_id]
+            stats.runs_scored += batter_innings.runs
+            stats.balls_faced += batter_innings.balls
+            stats.fours += batter_innings.fours
+            stats.sixes += batter_innings.sixes
+            if batter_innings.is_out:
+                stats.is_out = True
+                stats.dismissal_type = batter_innings.dismissal
+                if batter_innings.bowler:
+                    stats.dismissed_by_id = batter_innings.bowler.id
+
+        # Bowling stats
+        for player_id, bowler_spell in innings.bowler_spells.items():
+            if player_id not in player_stats_map:
+                player_stats_map[player_id] = PlayerMatchStats(
+                    match_id=match.id,
+                    fixture_id=fixture.id,
+                    season_id=season.id,
+                    player_id=player_id,
+                    team_id=bowling_team_id,
+                )
+            stats = player_stats_map[player_id]
+            stats.overs_bowled += bowler_spell.overs + (bowler_spell.balls / 6)
+            stats.runs_conceded += bowler_spell.runs
+            stats.wickets_taken += bowler_spell.wickets
+
+        # Fielding stats from dismissals
+        for player_id, batter_innings in innings.batter_innings.items():
+            if batter_innings.is_out and batter_innings.fielder:
+                fielder_id = batter_innings.fielder.id
+                if fielder_id not in player_stats_map:
+                    player_stats_map[fielder_id] = PlayerMatchStats(
+                        match_id=match.id,
+                        fixture_id=fixture.id,
+                        season_id=season.id,
+                        player_id=fielder_id,
+                        team_id=bowling_team_id,
+                    )
+                f_stats = player_stats_map[fielder_id]
+                dismissal = batter_innings.dismissal
+                if dismissal in ["caught", "caught_behind"]:
+                    f_stats.catches += 1
+                elif dismissal == "stumped":
+                    f_stats.stumpings += 1
+                elif dismissal == "run_out":
+                    f_stats.run_outs += 1
+
+    # Save all
+    for stats in player_stats_map.values():
+        db.add(stats)
+
+    return player_stats_map
+
+
+def _save_match_matchups(engine: MatchEngine, fixture: Fixture, match: Match, db: Session):
+    """Save batter-vs-bowler matchup data with DNA snapshots for post-match analysis."""
+    for innings_num, innings in enumerate([engine.innings1, engine.innings2], 1):
+        if not innings:
+            continue
+
+        # Build player lookup for DNA snapshots
+        all_players = {p.id: p for p in innings.batting_team}
+        all_players.update({p.id: p for p in innings.bowling_team})
+
+        for (batter_id, bowler_id), mu_data in innings.matchup_data.items():
+            batter = all_players.get(batter_id)
+            bowler = all_players.get(bowler_id)
+
+            # DNA snapshots
+            batter_dna_snap = None
+            if batter and batter.batting_dna:
+                batter_dna_snap = json.dumps(batter.batting_dna.to_dict())
+
+            bowler_dna_snap = None
+            if bowler and bowler.bowler_dna:
+                bowler_dna_snap = json.dumps(bowler.bowler_dna.to_dict())
+
+            # Determine if weakness was exploited
+            exploited = None
+            if mu_data.get("dismissal_type") and batter and batter.batting_dna:
+                delivery_type = mu_data.get("delivery_type", "")
+                weaknesses = batter.batting_dna.weaknesses
+                # Map delivery types to weakness categories
+                if bowler and bowler.bowler_dna:
+                    from app.engine.dna import PacerDNA, SpinnerDNA
+                    if isinstance(bowler.bowler_dna, PacerDNA):
+                        if "vs_bounce" in weaknesses and delivery_type in ("bouncer", "short_ball"):
+                            exploited = "vs_bounce"
+                        elif "vs_pace" in weaknesses and delivery_type in ("yorker", "good_length"):
+                            exploited = "vs_pace"
+                        elif "vs_deception" in weaknesses and delivery_type in ("slower_ball", "knuckle_ball", "cutter"):
+                            exploited = "vs_deception"
+                    elif isinstance(bowler.bowler_dna, SpinnerDNA):
+                        if "vs_spin" in weaknesses:
+                            exploited = "vs_spin"
+                        elif "vs_deception" in weaknesses and delivery_type in ("arm_ball", "googly"):
+                            exploited = "vs_deception"
+
+            matchup = MatchMatchup(
+                match_id=match.id,
+                fixture_id=fixture.id,
+                innings_number=innings_num,
+                batter_id=batter_id,
+                bowler_id=bowler_id,
+                balls_faced=mu_data.get("balls", 0),
+                runs_scored=mu_data.get("runs", 0),
+                fours=mu_data.get("fours", 0),
+                sixes=mu_data.get("sixes", 0),
+                dots=mu_data.get("dots", 0),
+                was_dismissed=bool(mu_data.get("dismissal_type")),
+                dismissal_type=mu_data.get("dismissal_type"),
+                wicket_delivery_type=mu_data.get("delivery_type"),
+                exploited_weakness=exploited,
+                batter_dna_snapshot=batter_dna_snap,
+                bowler_dna_snapshot=bowler_dna_snap,
+            )
+            db.add(matchup)
+
+
+def _update_all_player_form(engine: MatchEngine, fixture: Fixture, match: Match,
+                            player_stats_map: dict, db: Session) -> list:
+    """Update form for all players who participated in the match. Returns form changes list."""
+    form_changes = []
+
+    for player_id, match_stats in player_stats_map.items():
+        player = db.query(Player).get(player_id)
+        if not player:
+            continue
+
+        old_form = player.form
+        delta = calculate_form_delta(player, match_stats)
+        update_player_form(player, delta)
+
+        # Store the delta in the match stats record
+        match_stats.form_delta = delta
+
+        form_changes.append({
+            "player_id": player_id,
+            "player_name": player.name,
+            "old_form": round(old_form, 3),
+            "new_form": round(player.form, 3),
+            "delta": round(delta, 4),
+        })
+
+    return form_changes
+
+
 def _finalize_match_interactive(engine: MatchEngine, fixture: Fixture, db: Session) -> tuple:
     """Finalize match and return (winner_id, margin) tuple"""
     # Determine winner
@@ -1096,6 +1286,14 @@ def _finalize_match_interactive(engine: MatchEngine, fixture: Fixture, db: Sessi
 
     # Update player season stats for leaderboards
     _update_player_season_stats(engine, fixture, db)
+
+    # Flush to ensure match.id is assigned for FK references
+    db.flush()
+
+    # Save per-match individual player stats + matchup data + update form
+    player_stats_map = _save_player_match_stats(engine, fixture, match, db)
+    _save_match_matchups(engine, fixture, match, db)
+    _update_all_player_form(engine, fixture, match, player_stats_map, db)
 
     # Check if league stage is complete - transition to playoffs
     career = db.query(Career).filter_by(id=season.career_id).first()
@@ -1579,4 +1777,102 @@ def get_match_result(
     raise HTTPException(
         status_code=404,
         detail="Match scorecard no longer available. Detailed scorecards are only available immediately after match completion."
+    )
+
+
+@router.get("/{career_id}/match/{fixture_id}/analysis", response_model=MatchAnalysisResponse)
+def get_match_analysis(
+    career_id: int,
+    fixture_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get DNA matchup analysis and form changes for a completed match."""
+    career = db.query(Career).filter_by(id=career_id, user_id=current_user.id).first()
+    if not career:
+        raise HTTPException(status_code=404, detail="Career not found")
+
+    fixture = db.query(Fixture).filter_by(id=fixture_id, season_id=db.query(Season).filter_by(
+        career_id=career_id).order_by(Season.season_number.desc()).first().id).first()
+    if not fixture:
+        raise HTTPException(status_code=404, detail="Fixture not found")
+    if fixture.status != FixtureStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Match not yet completed")
+
+    # Get matchup records
+    matchups = db.query(MatchMatchup).filter_by(fixture_id=fixture_id).all()
+
+    # Build response
+    innings1_matchups = []
+    innings2_matchups = []
+
+    for mu in matchups:
+        batter = db.query(Player).get(mu.batter_id)
+        bowler = db.query(Player).get(mu.bowler_id)
+
+        sr = round((mu.runs_scored / mu.balls_faced) * 100, 1) if mu.balls_faced > 0 else 0.0
+
+        # Parse DNA snapshots
+        batter_dna = None
+        if mu.batter_dna_snapshot:
+            try:
+                dna_data = json.loads(mu.batter_dna_snapshot)
+                batter_dna = BatterDNABrief(**dna_data)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        bowler_dna = None
+        if mu.bowler_dna_snapshot:
+            try:
+                dna_data = json.loads(mu.bowler_dna_snapshot)
+                bowler_dna = BowlerDNABrief(**dna_data)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        entry = MatchMatchupResponse(
+            batter_id=mu.batter_id,
+            batter_name=batter.name if batter else "Unknown",
+            bowler_id=mu.bowler_id,
+            bowler_name=bowler.name if bowler else "Unknown",
+            innings_number=mu.innings_number,
+            balls_faced=mu.balls_faced,
+            runs_scored=mu.runs_scored,
+            fours=mu.fours,
+            sixes=mu.sixes,
+            dots=mu.dots,
+            strike_rate=sr,
+            was_dismissed=mu.was_dismissed,
+            dismissal_type=mu.dismissal_type,
+            wicket_delivery_type=mu.wicket_delivery_type,
+            exploited_weakness=mu.exploited_weakness,
+            batter_dna=batter_dna,
+            bowler_dna=bowler_dna,
+        )
+
+        if mu.innings_number == 1:
+            innings1_matchups.append(entry)
+        else:
+            innings2_matchups.append(entry)
+
+    # Get form changes
+    match_stats = db.query(PlayerMatchStats).filter_by(fixture_id=fixture_id).all()
+    form_changes = []
+    for stats in match_stats:
+        if abs(stats.form_delta) > 0.001:
+            player = db.query(Player).get(stats.player_id)
+            team = db.query(Team).get(stats.team_id)
+            if player:
+                form_changes.append(FormChangeEntry(
+                    player_id=stats.player_id,
+                    player_name=player.name,
+                    team_name=team.short_name if team else "Unknown",
+                    old_form=round(player.form - stats.form_delta, 3),
+                    new_form=round(player.form, 3),
+                    delta=round(stats.form_delta, 4),
+                ))
+
+    return MatchAnalysisResponse(
+        innings1_matchups=innings1_matchups,
+        innings2_matchups=innings2_matchups,
+        form_changes=form_changes,
     )

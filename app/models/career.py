@@ -2,7 +2,7 @@
 Career and Season models for persistent game state
 """
 from typing import Optional, List
-from sqlalchemy import String, Integer, ForeignKey, Enum, DateTime, Boolean, Text
+from sqlalchemy import String, Integer, Float, ForeignKey, Enum, DateTime, Boolean, Text, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 import enum
@@ -17,6 +17,7 @@ class CareerStatus(enum.Enum):
     IN_SEASON = "in_season"  # Matches being played
     PLAYOFFS = "playoffs"  # Playoff stage
     POST_SEASON = "post_season"  # Season ended, before next
+    TRANSFER_WINDOW = "transfer_window"  # Transfer window between seasons
     COMPLETED = "completed"  # Career ended
 
 
@@ -26,6 +27,7 @@ class SeasonPhase(enum.Enum):
     LEAGUE_STAGE = "league_stage"
     PLAYOFFS = "playoffs"
     COMPLETED = "completed"
+    TRANSFER_WINDOW = "transfer_window"
 
 
 class Career(Base):
@@ -253,3 +255,121 @@ class PlayerSeasonStats(Base):
 
     def __repr__(self):
         return f"<PlayerSeasonStats: {self.runs} runs, {self.wickets} wkts>"
+
+
+class PlayerMatchStats(Base):
+    """
+    Individual player performance in a specific match.
+    Used for form calculation and historical tracking.
+    """
+    __tablename__ = "player_match_stats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"))
+    fixture_id: Mapped[int] = mapped_column(ForeignKey("fixtures.id"))
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"))
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+
+    # Batting
+    runs_scored: Mapped[int] = mapped_column(Integer, default=0, insert_default=0)
+    balls_faced: Mapped[int] = mapped_column(Integer, default=0, insert_default=0)
+    fours: Mapped[int] = mapped_column(Integer, default=0, insert_default=0)
+    sixes: Mapped[int] = mapped_column(Integer, default=0, insert_default=0)
+    is_out: Mapped[bool] = mapped_column(Boolean, default=False, insert_default=False)
+    dismissal_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    dismissed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"), nullable=True)
+
+    # Bowling
+    overs_bowled: Mapped[float] = mapped_column(Float, default=0.0, insert_default=0.0)
+    runs_conceded: Mapped[int] = mapped_column(Integer, default=0, insert_default=0)
+    wickets_taken: Mapped[int] = mapped_column(Integer, default=0, insert_default=0)
+
+    # Fielding
+    catches: Mapped[int] = mapped_column(Integer, default=0, insert_default=0)
+    stumpings: Mapped[int] = mapped_column(Integer, default=0, insert_default=0)
+    run_outs: Mapped[int] = mapped_column(Integer, default=0, insert_default=0)
+
+    # Pre-computed form impact
+    form_delta: Mapped[float] = mapped_column(Float, default=0.0, insert_default=0.0)
+
+    # Relationships
+    player: Mapped["Player"] = relationship("Player", foreign_keys=[player_id])
+    match: Mapped["Match"] = relationship("Match")
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Ensure numeric fields default to 0 in Python (SQLAlchemy defaults only apply at INSERT time)
+        for field, default in [
+            ("runs_scored", 0), ("balls_faced", 0), ("fours", 0), ("sixes", 0),
+            ("is_out", False), ("overs_bowled", 0.0), ("runs_conceded", 0),
+            ("wickets_taken", 0), ("catches", 0), ("stumpings", 0),
+            ("run_outs", 0), ("form_delta", 0.0),
+        ]:
+            if getattr(self, field, None) is None:
+                setattr(self, field, default)
+
+    def __repr__(self):
+        return f"<PlayerMatchStats: {self.runs_scored}({self.balls_faced}) {self.wickets_taken}w>"
+
+
+class MatchMatchup(Base):
+    """
+    Aggregated batter-vs-bowler data per matchup per innings.
+    Used for post-match DNA matchup analysis cards.
+    """
+    __tablename__ = "match_matchups"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"))
+    fixture_id: Mapped[int] = mapped_column(ForeignKey("fixtures.id"))
+    innings_number: Mapped[int] = mapped_column(Integer)
+
+    batter_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+    bowler_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+
+    # Aggregated stats
+    balls_faced: Mapped[int] = mapped_column(Integer, default=0)
+    runs_scored: Mapped[int] = mapped_column(Integer, default=0)
+    fours: Mapped[int] = mapped_column(Integer, default=0)
+    sixes: Mapped[int] = mapped_column(Integer, default=0)
+    dots: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Dismissal
+    was_dismissed: Mapped[bool] = mapped_column(Boolean, default=False)
+    dismissal_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    wicket_delivery_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    exploited_weakness: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+
+    # DNA snapshots (frozen at match time)
+    batter_dna_snapshot: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    bowler_dna_snapshot: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Relationships
+    batter: Mapped["Player"] = relationship("Player", foreign_keys=[batter_id])
+    bowler: Mapped["Player"] = relationship("Player", foreign_keys=[bowler_id])
+
+    def __repr__(self):
+        return f"<MatchMatchup: batter {self.batter_id} vs bowler {self.bowler_id} - {self.runs_scored}/{self.balls_faced}>"
+
+
+class PlayerRetention(Base):
+    """
+    Records player retention decisions during transfer window.
+    """
+    __tablename__ = "player_retentions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"))
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+
+    retention_slot: Mapped[int] = mapped_column(Integer)  # 1-4
+    retention_price: Mapped[int] = mapped_column(BigInteger)
+
+    # Relationships
+    player: Mapped["Player"] = relationship("Player")
+    team: Mapped["Team"] = relationship("Team")
+
+    def __repr__(self):
+        return f"<PlayerRetention: slot {self.retention_slot} - {self.retention_price}>"

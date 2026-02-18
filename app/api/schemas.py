@@ -16,6 +16,7 @@ class CareerStatusEnum(str, Enum):
     IN_SEASON = "in_season"
     PLAYOFFS = "playoffs"
     POST_SEASON = "post_season"
+    TRANSFER_WINDOW = "transfer_window"
     COMPLETED = "completed"
 
 
@@ -25,6 +26,7 @@ class SeasonPhaseEnum(str, Enum):
     LEAGUE_STAGE = "league_stage"
     PLAYOFFS = "playoffs"
     COMPLETED = "completed"
+    TRANSFER_WINDOW = "transfer_window"
 
 
 # Team Schemas
@@ -74,7 +76,7 @@ class PlayerResponse(PlayerBase):
     team_id: Optional[int] = None
     base_price: int
     sold_price: Optional[int] = None
-    form: float
+    form: float = 1.0
     batting_style: str
     bowling_type: str
     batting_dna: Optional[dict] = None  # BatterDNA as dict
@@ -98,6 +100,7 @@ class PlayerBrief(BaseModel):
     power: int = 50  # Power for batters
     traits: List[str] = []  # Player traits
     batting_intent: str = "accumulator"  # Batting intent
+    form: float = 1.0  # Player form (0.7-1.3)
     batting_dna: Optional[dict] = None  # BatterDNA as dict (optional)
     bowling_dna: Optional[dict] = None  # BowlerDNA as dict (optional)
 
@@ -680,3 +683,81 @@ class LeaderboardsResponse(BaseModel):
     purple_cap: List[BowlerLeaderboardEntry]
     most_sixes: List[SixesLeaderboardEntry]
     most_catches: List[CatchesLeaderboardEntry]
+
+
+# Match Analysis Schemas (Phase 3)
+class MatchMatchupResponse(BaseModel):
+    batter_id: int
+    batter_name: str
+    bowler_id: int
+    bowler_name: str
+    innings_number: int
+    balls_faced: int
+    runs_scored: int
+    fours: int
+    sixes: int
+    dots: int
+    strike_rate: float
+    was_dismissed: bool
+    dismissal_type: Optional[str] = None
+    wicket_delivery_type: Optional[str] = None
+    exploited_weakness: Optional[str] = None
+    batter_dna: Optional[BatterDNABrief] = None
+    bowler_dna: Optional[BowlerDNABrief] = None
+
+
+class FormChangeEntry(BaseModel):
+    player_id: int
+    player_name: str
+    team_name: str
+    old_form: float
+    new_form: float
+    delta: float
+
+
+class MatchAnalysisResponse(BaseModel):
+    innings1_matchups: List[MatchMatchupResponse]
+    innings2_matchups: List[MatchMatchupResponse]
+    form_changes: List[FormChangeEntry]
+
+
+# Transfer Window Schemas (Phase 3)
+class RetentionCandidateResponse(BaseModel):
+    player_id: int
+    player_name: str
+    role: str
+    overall_rating: int
+    is_overseas: bool
+    form: float
+    age: int
+    season_runs: int = 0
+    season_wickets: int = 0
+    retention_slot: int  # 1-4
+    retention_price: int
+
+    class Config:
+        from_attributes = True
+
+
+class RetentionRequest(BaseModel):
+    player_ids: List[int]  # Up to 4 player IDs to retain
+
+
+class AIRetentionEntry(BaseModel):
+    team_id: int
+    team_name: str
+    retained_players: List[dict]  # [{player_id, player_name, retention_slot, retention_price}]
+    total_cost: int
+
+
+class AIRetentionsResponse(BaseModel):
+    retentions: List[AIRetentionEntry]
+
+
+class TransferStatusResponse(BaseModel):
+    career_status: str
+    season_phase: str
+    user_retentions_done: bool
+    ai_retentions_done: bool
+    players_released: bool
+    mini_auction_started: bool
