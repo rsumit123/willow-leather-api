@@ -12,12 +12,11 @@ from app.models.team import Team
 from app.models.player import Player
 from app.models.user import User
 from app.models.auction import (
-    Auction, AuctionPlayerEntry, TeamAuctionState,
+    Auction, AuctionPlayerEntry, AuctionBid, TeamAuctionState,
     AuctionStatus, AuctionPlayerStatus
 )
 from app.engine.auction_engine import AuctionEngine
 from app.auth.utils import get_current_user
-from app.models.auction import AuctionBid
 from app.api.schemas import (
     AuctionStateResponse, TeamAuctionStateResponse, BidResponse,
     AuctionPlayerResult, PlayerBrief, CategoryPlayersResponse,
