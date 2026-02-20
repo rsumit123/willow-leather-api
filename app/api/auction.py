@@ -17,11 +17,12 @@ from app.models.auction import (
 )
 from app.engine.auction_engine import AuctionEngine
 from app.auth.utils import get_current_user
+from app.models.auction import AuctionBid
 from app.api.schemas import (
     AuctionStateResponse, TeamAuctionStateResponse, BidResponse,
     AuctionPlayerResult, PlayerBrief, CategoryPlayersResponse,
     SkipCategoryResponse, SkipCategoryPlayerResult, SoldPlayerBrief,
-    AutoBidRequest, AutoBidResponse, NextPlayerResponse
+    AutoBidRequest, AutoBidResponse, NextPlayerResponse, BidHistoryEntry
 )
 
 router = APIRouter(prefix="/auction", tags=["Auction"])
@@ -142,6 +143,24 @@ def get_auction_state(
         team = db.query(Team).filter_by(id=auction.current_bidder_team_id).first()
         current_bidder_name = team.short_name if team else None
 
+    # Get bid history for current player
+    bid_history = []
+    if auction.current_player_id:
+        bids = (
+            db.query(AuctionBid, Team)
+            .join(Team, AuctionBid.team_id == Team.id)
+            .filter(
+                AuctionBid.auction_id == auction.id,
+                AuctionBid.player_id == auction.current_player_id
+            )
+            .order_by(AuctionBid.bid_time)
+            .all()
+        )
+        bid_history = [
+            BidHistoryEntry(team_name=team.short_name, amount=bid.bid_amount)
+            for bid, team in bids
+        ]
+
     return AuctionStateResponse(
         status=auction.status.value,
         current_player=current_player,
@@ -151,6 +170,7 @@ def get_auction_state(
         players_sold=auction.players_sold,
         players_unsold=auction.players_unsold,
         total_players=auction.total_players,
+        bid_history=bid_history,
     )
 
 
@@ -665,6 +685,22 @@ def auto_bid(
         request.max_bid
     )
 
+    # Query bid history for the current player
+    bids = (
+        db.query(AuctionBid, Team)
+        .join(Team, AuctionBid.team_id == Team.id)
+        .filter(
+            AuctionBid.auction_id == auction.id,
+            AuctionBid.player_id == player_entry.player_id
+        )
+        .order_by(AuctionBid.bid_time)
+        .all()
+    )
+    bid_history = [
+        BidHistoryEntry(team_name=team.short_name, amount=bid.bid_amount)
+        for bid, team in bids
+    ]
+
     if result.status in ("won", "lost"):
         return AutoBidResponse(
             status=result.status,
@@ -674,6 +710,7 @@ def auto_bid(
             sold_to_team_id=result.final_result.winning_team.id if result.final_result.winning_team else None,
             sold_to_team_name=result.final_result.winning_team.short_name if result.final_result.winning_team else None,
             sold_price=result.final_result.winning_bid,
+            bid_history=bid_history,
         )
     else:
         # cap_exceeded or budget_limit
@@ -682,4 +719,5 @@ def auto_bid(
             current_bid=result.current_bid,
             current_bidder_team_name=result.current_bidder_team_name,
             next_bid_needed=result.next_bid_needed,
+            bid_history=bid_history,
         )

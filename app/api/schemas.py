@@ -144,6 +144,11 @@ class SeasonResponse(BaseModel):
 
 
 # Auction Schemas
+class BidHistoryEntry(BaseModel):
+    team_name: str
+    amount: int
+
+
 class AuctionStateResponse(BaseModel):
     status: str
     current_player: Optional[PlayerBrief] = None
@@ -154,6 +159,7 @@ class AuctionStateResponse(BaseModel):
     players_unsold: int
     total_players: int
     current_category: Optional[str] = None
+    bid_history: List[BidHistoryEntry] = []
 
 
 class NextPlayerResponse(BaseModel):
@@ -217,6 +223,7 @@ class AutoBidResponse(BaseModel):
     current_bid: Optional[int] = None
     current_bidder_team_name: Optional[str] = None
     next_bid_needed: Optional[int] = None
+    bid_history: List[BidHistoryEntry] = []
 
 
 class SkipCategoryPlayerResult(BaseModel):
