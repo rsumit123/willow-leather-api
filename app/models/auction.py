@@ -165,7 +165,7 @@ class TeamAuctionState(Base):
         Maximum bid this team can make while ensuring they can fill minimum squad.
         Reserve 2 crore per remaining slot needed.
         """
-        slots_to_fill = self.min_players_needed - 1  # -1 for current player
+        slots_to_fill = max(0, self.min_players_needed - 1)  # -1 for current player
         reserved = slots_to_fill * 20000000  # 2 crore each
         return max(0, self.remaining_budget - reserved)
 

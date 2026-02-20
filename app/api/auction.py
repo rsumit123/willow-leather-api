@@ -293,23 +293,6 @@ def place_user_bid(
     )
 
 
-@router.post("/{career_id}/pass")
-def pass_bidding(
-    career_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """User passes on current bidding (lets AI continue)"""
-    career, season, auction = get_current_auction(career_id, current_user.id, db)
-
-    if auction.status != AuctionStatus.IN_PROGRESS:
-        raise HTTPException(status_code=400, detail="Auction not in progress")
-
-    if not auction.current_player_id:
-        raise HTTPException(status_code=400, detail="No player currently being auctioned")
-
-    return {"message": "Passed"}
-
 
 @router.post("/{career_id}/simulate-bidding")
 def simulate_bidding_round(
