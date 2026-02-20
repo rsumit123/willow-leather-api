@@ -319,6 +319,9 @@ class DeliveryOptionResponse(BaseModel):
     description: str
     exec_difficulty: int
     targets_weakness: Optional[str] = None  # e.g. "vs_bounce" if batter is weak there
+    times_used_this_over: int = 0
+    max_per_over: Optional[int] = None  # None = unlimited
+    is_restricted: bool = False  # True if hard-capped (e.g. bouncer after 2)
 
 
 class PitchInfoResponse(BaseModel):

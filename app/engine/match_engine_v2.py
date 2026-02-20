@@ -161,6 +161,7 @@ class InningsState:
     balls_faced: dict = field(default_factory=dict)       # player_id -> int
     bowler_overs_count: dict = field(default_factory=dict) # player_id -> int
     partnership_runs: int = 0
+    delivery_counts_this_over: dict = field(default_factory=dict)  # {"bouncer": 2}
 
     # Matchup tracking for post-match analysis
     # Key: (batter_id, bowler_id) -> {balls, runs, fours, sixes, dots, dismissal_type, delivery_type}
@@ -339,11 +340,11 @@ def choose_optimal_delivery(repertoire: List[Delivery], batter: Player) -> Deliv
 # --- Core matchup pipeline ---
 
 def execution_check(bowler_dna, delivery: Delivery, pitch: PitchDNA,
-                    fatigue: float, overs: int) -> str:
+                    fatigue: float, overs: int, extra_difficulty: int = 0) -> str:
     control = bowler_dna.control * fatigue
     roll = random.gauss(control, 8)
 
-    target = delivery.exec_difficulty
+    target = delivery.exec_difficulty + extra_difficulty
     if overs < 6:
         if delivery.name in ("outswinger", "inswinger"):
             target -= 5
@@ -505,6 +506,64 @@ def safety_net(innings: InningsState) -> float:
     if rr > 13:
         return -10
     return 0
+
+
+# --- Trait modifiers ---
+
+def _get_traits(player) -> list:
+    """Parse trait list from player's JSON traits field."""
+    if not player.traits:
+        return []
+    try:
+        return json.loads(player.traits)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def trait_modifier_batter(batter, innings: InningsState) -> float:
+    """Apply trait-based modifiers to batter raw_skill."""
+    traits = _get_traits(batter)
+    if not traits:
+        return 0.0
+    bonus = 0.0
+
+    # Pressure detection: wickets >= 5 in first 12 overs, or RRR > 10 in chase
+    is_pressure = False
+    if innings.wickets >= 5 and (innings.overs * 6 + innings.balls) < 72:
+        is_pressure = True
+    if innings.target and innings.overs > 0:
+        balls_left = max(1, 120 - (innings.overs * 6 + innings.balls))
+        rrr = (innings.target - innings.total_runs) / (balls_left / 6)
+        if rrr > 10:
+            is_pressure = True
+
+    if 'clutch' in traits and is_pressure:
+        bonus += 10
+    if 'choker' in traits and is_pressure:
+        bonus -= 15
+    if 'finisher' in traits and innings.overs >= 15:
+        bonus += 15
+
+    return bonus
+
+
+def trait_modifier_bowler(bowler, innings: InningsState) -> float:
+    """Apply trait-based modifiers to bowler raw_attack."""
+    traits = _get_traits(bowler)
+    if not traits:
+        return 0.0
+    bonus = 0.0
+
+    if 'partnership_breaker' in traits and innings.partnership_runs >= 50:
+        bonus += 10
+
+    return bonus
+
+
+# --- Delivery restriction constants ---
+
+DELIVERY_HARD_LIMITS = {'bouncer': 2}  # No-ball if exceeded
+DELIVERY_PENALTY_LIMITS = {'yorker': 2, 'wide_yorker': 2, 'slower_ball': 2, 'arm_ball': 2}
 
 
 # --- Aggression mapping ---
@@ -724,6 +783,20 @@ class MatchEngineV2:
 
         outcome = BallOutcome(delivery_name=delivery.name)
 
+        # Delivery restriction check
+        count = innings.delivery_counts_this_over.get(delivery.name, 0)
+        if delivery.name in DELIVERY_HARD_LIMITS and count >= DELIVERY_HARD_LIMITS[delivery.name]:
+            outcome.is_no_ball = True
+            outcome.runs = 1
+            outcome.commentary = f"NO BALL! Too many {delivery.display_name}s this over — only {DELIVERY_HARD_LIMITS[delivery.name]} allowed."
+            innings.delivery_counts_this_over[delivery.name] = count + 1
+            return outcome
+
+        exec_penalty = 0
+        if delivery.name in DELIVERY_PENALTY_LIMITS and count >= DELIVERY_PENALTY_LIMITS[delivery.name]:
+            exec_penalty = 15
+        innings.delivery_counts_this_over[delivery.name] = count + 1
+
         # Step 0: Jaffa — increases with balls faced
         bf = innings.balls_faced.get(batter.id, 0)
         jaffa_rate = 0.005 + max(0, bf - 20) * 0.0028
@@ -737,7 +810,7 @@ class MatchEngineV2:
             return outcome
 
         # Step 1: Execution check
-        exec_result = execution_check(bowler_dna, delivery, innings.pitch, fatigue, overs)
+        exec_result = execution_check(bowler_dna, delivery, innings.pitch, fatigue, overs, exec_penalty)
         if exec_result == "bad_miss":
             batter_bonus = random.uniform(12, 18)
         elif exec_result == "slight_miss":
@@ -750,11 +823,19 @@ class MatchEngineV2:
                                           fatigue, innings.is_second_innings)
         # Apply bowler form (0.7-1.3 multiplier)
         raw_attack *= getattr(bowler, 'form', 1.0)
+        # Trait modifier (e.g., partnership_breaker)
+        raw_attack += trait_modifier_bowler(bowler, innings)
 
         # Step 3: Batter skill rating
         raw_skill = batter_skill_rating(batter_dna, delivery) + batter_bonus
         # Apply batter form (0.7-1.3 multiplier)
         raw_skill *= getattr(batter, 'form', 1.0)
+        # Trait modifiers (clutch, choker, finisher)
+        raw_skill += trait_modifier_batter(batter, innings)
+        # On-fire bonus (+5 when batter has hit 2+ boundaries in last 3 balls)
+        batter_state = innings.batter_states.get(batter.id)
+        if batter_state and batter_state.is_on_fire:
+            raw_skill += 5
 
         # Tail-ender floor: only for genuinely weak batters (avg DNA < 40)
         if batter_dna.avg() < 40:
@@ -909,6 +990,7 @@ class MatchEngineV2:
 
         fielders = [p for p in innings.bowling_team if p.id != bowler.id]
         innings.this_over = []
+        innings.delivery_counts_this_over = {}
 
         while balls_bowled < 6 and not innings.is_innings_complete:
             striker = next(p for p in innings.batting_team if p.id == innings.striker_id)

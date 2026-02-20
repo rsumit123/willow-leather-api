@@ -118,11 +118,16 @@ def _get_pitch_info(pitch) -> Optional[PitchInfoResponse]:
     )
 
 
-def _get_delivery_options(bowler: Player, batter: Player) -> List[DeliveryOptionResponse]:
-    """Get available deliveries for a bowler, with matchup hints for current batter."""
+DELIVERY_HARD_LIMITS = {'bouncer': 2}
+DELIVERY_PENALTY_LIMITS = {'yorker': 2, 'wide_yorker': 2, 'slower_ball': 2, 'arm_ball': 2}
+
+
+def _get_delivery_options(bowler: Player, batter: Player, innings=None) -> List[DeliveryOptionResponse]:
+    """Get available deliveries for a bowler, with matchup hints and restriction info."""
     repertoire = get_repertoire(bowler)
     batter_dna = batter.batting_dna
     weaknesses = batter_dna.weaknesses if batter_dna else []
+    counts = innings.delivery_counts_this_over if innings else {}
 
     options = []
     for d in repertoire:
@@ -130,12 +135,20 @@ def _get_delivery_options(bowler: Player, batter: Player) -> List[DeliveryOption
         if d.targets_stat and d.targets_stat in weaknesses:
             targets_weakness = d.targets_stat
 
+        count = counts.get(d.name, 0)
+        hard_limit = DELIVERY_HARD_LIMITS.get(d.name)
+        penalty_limit = DELIVERY_PENALTY_LIMITS.get(d.name)
+        max_per_over = hard_limit or penalty_limit
+
         options.append(DeliveryOptionResponse(
             name=d.name,
             display_name=d.display_name,
             description=d.description,
             exec_difficulty=d.exec_difficulty,
             targets_weakness=targets_weakness,
+            times_used_this_over=count,
+            max_per_over=max_per_over,
+            is_restricted=(hard_limit is not None and count >= hard_limit),
         ))
     return options
 
@@ -325,7 +338,7 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
     # Available deliveries (only when user is bowling and has a bowler + striker)
     available_deliveries = None
     if is_user_bowling and bowler and striker and status == "in_progress":
-        available_deliveries = _get_delivery_options(bowler, striker)
+        available_deliveries = _get_delivery_options(bowler, striker, innings)
 
     # Last delivery name from the most recent ball outcome
     last_delivery_name = None
@@ -812,6 +825,7 @@ def play_ball(
             bowler_obj = engine.select_bowler(innings)
             innings.current_bowler_id = bowler_obj.id
             innings.this_over = []
+            innings.delivery_counts_this_over = {}
 
     # Get striker and bowler
     striker = next(p for p in innings.batting_team if p.id == innings.striker_id)
@@ -1579,6 +1593,8 @@ def select_bowler_manual(
 
     # Set the selected bowler
     innings.current_bowler_id = bowler.id
+    innings.this_over = []
+    innings.delivery_counts_this_over = {}
 
     # Initialize bowler spell if needed
     if bowler.id not in innings.bowler_spells:
