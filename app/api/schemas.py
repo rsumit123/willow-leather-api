@@ -399,6 +399,9 @@ class MatchStateResponse(BaseModel):
     # Bowler change indicator
     can_change_bowler: bool = False
 
+    # Batter change indicator
+    can_change_batter: bool = False
+
     # v2 engine additions
     pitch_info: Optional[PitchInfoResponse] = None
     available_deliveries: Optional[list[DeliveryOptionResponse]] = None
@@ -429,6 +432,30 @@ class AvailableBowlersResponse(BaseModel):
 
 class SelectBowlerRequest(BaseModel):
     bowler_id: int
+
+
+# Batter Selection Schemas
+class AvailableBatterResponse(BaseModel):
+    id: int
+    name: str
+    role: str
+    batting_skill: int
+    batting_style: str
+    runs: int = 0
+    balls: int = 0
+    fours: int = 0
+    sixes: int = 0
+    is_next_in_order: bool = False
+    traits: list[str] = []
+    batting_dna: Optional[BatterDNABrief] = None
+
+
+class AvailableBattersResponse(BaseModel):
+    batters: list[AvailableBatterResponse]
+
+
+class SelectBatterRequest(BaseModel):
+    batter_id: int
 
 
 class BallRequest(BaseModel):

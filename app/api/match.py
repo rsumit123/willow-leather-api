@@ -25,6 +25,7 @@ from app.api.schemas import (
     MatchStateResponse, BallRequest, BallResultResponse,
     PlayerStateBrief, BowlerStateBrief, TossResultResponse, StartMatchRequest,
     AvailableBowlerResponse, AvailableBowlersResponse, SelectBowlerRequest,
+    AvailableBatterResponse, AvailableBattersResponse, SelectBatterRequest,
     BatterScorecardEntry, BowlerScorecardEntry, ExtrasBreakdown,
     InningsScorecard, ManOfTheMatch, LiveScorecardResponse, MatchCompletionResponse,
     BatterDNABrief, BowlerDNABrief, DeliveryOptionResponse, PitchInfoResponse,
@@ -332,6 +333,9 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
     # User can change bowler at the start of an over when they are fielding
     can_change_bowler = innings.balls == 0 and is_user_bowling and status == "in_progress"
 
+    # User must select next batter after a wicket
+    can_change_batter = innings.striker_id is None and is_user_batting and status == "in_progress"
+
     # Pitch info (always included)
     pitch_info = _get_pitch_info(innings.pitch) if hasattr(innings, 'pitch') else None
 
@@ -374,6 +378,7 @@ def _get_match_state_response(engine: MatchEngine, fixture: Fixture, db: Session
         user_team_name=user_team.short_name if user_team else "",
         innings_just_changed=innings_just_changed,
         can_change_bowler=can_change_bowler,
+        can_change_batter=can_change_batter,
         pitch_info=pitch_info,
         available_deliveries=available_deliveries,
         last_delivery_name=last_delivery_name,
@@ -827,6 +832,10 @@ def play_ball(
             innings.this_over = []
             innings.delivery_counts_this_over = {}
 
+    # Guard: batter selection pending
+    if innings.striker_id is None:
+        raise HTTPException(status_code=400, detail="Please select next batter first")
+
     # Get striker and bowler
     striker = next(p for p in innings.batting_team if p.id == innings.striker_id)
     bowler = next(p for p in innings.bowling_team if p.id == innings.current_bowler_id)
@@ -926,7 +935,10 @@ def play_ball(
         innings.bowler_states.setdefault(bowler.id, BowlerState(player_id=bowler.id)).has_confidence = True
 
         # Bring in next batter
-        if innings.next_batter_index < len(innings.batting_order):
+        if is_user_batting_for_ball:
+            # User chooses next batter — leave striker_id as None
+            innings.striker_id = None
+        elif innings.next_batter_index < len(innings.batting_order):
             next_batter_id = innings.batting_order[innings.next_batter_index]
             next_batter_obj = next(p for p in innings.batting_team if p.id == next_batter_id)
             innings.striker_id = next_batter_id
@@ -1603,6 +1615,127 @@ def select_bowler_manual(
     # Initialize bowler state if needed
     if bowler.id not in innings.bowler_states:
         innings.bowler_states[bowler.id] = BowlerState(player_id=bowler.id)
+
+    return _get_match_state_response(engine, fixture, db)
+
+
+@router.get("/{career_id}/match/{fixture_id}/available-batters")
+def get_available_batters(
+    career_id: int,
+    fixture_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get batters available to come in next after a wicket."""
+    verify_career_ownership(career_id, current_user.id, db)
+    if fixture_id not in active_matches:
+        raise HTTPException(status_code=404, detail="Active match session not found")
+
+    engine = active_matches[fixture_id]
+    _refresh_engine_players(engine, db)
+    innings = engine.current_innings
+
+    if not innings:
+        raise HTTPException(status_code=400, detail="Match not initialized")
+
+    # Build set of players who are out or currently at crease
+    excluded_ids = {innings.non_striker_id}
+    if innings.striker_id is not None:
+        excluded_ids.add(innings.striker_id)
+
+    # Next batter suggested by batting order
+    next_in_order_id = None
+    if innings.next_batter_index < len(innings.batting_order):
+        next_in_order_id = innings.batting_order[innings.next_batter_index]
+
+    available = []
+    for player in innings.batting_team:
+        if player.id in excluded_ids:
+            continue
+        # Skip players who are already out
+        bi = innings.batter_innings.get(player.id)
+        if bi and bi.is_out:
+            continue
+
+        available.append(AvailableBatterResponse(
+            id=player.id,
+            name=player.name,
+            role=player.role.value if hasattr(player.role, 'value') else str(player.role),
+            batting_skill=player.batting,
+            batting_style=player.batting_style.value if hasattr(player.batting_style, 'value') else str(player.batting_style),
+            runs=bi.runs if bi else 0,
+            balls=bi.balls if bi else 0,
+            fours=bi.fours if bi else 0,
+            sixes=bi.sixes if bi else 0,
+            is_next_in_order=(player.id == next_in_order_id),
+            traits=_parse_traits(player.traits),
+            batting_dna=_player_batting_dna_brief(player),
+        ))
+
+    # Sort by batting order position
+    order_map = {pid: idx for idx, pid in enumerate(innings.batting_order)}
+    available.sort(key=lambda b: order_map.get(b.id, 999))
+
+    return AvailableBattersResponse(batters=available)
+
+
+@router.post("/{career_id}/match/{fixture_id}/select-batter")
+def select_batter(
+    career_id: int,
+    fixture_id: int,
+    request: SelectBatterRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Select next batter after a wicket falls."""
+    verify_career_ownership(career_id, current_user.id, db)
+    if fixture_id not in active_matches:
+        raise HTTPException(status_code=404, detail="Active match session not found")
+
+    engine = active_matches[fixture_id]
+    _refresh_engine_players(engine, db)
+    innings = engine.current_innings
+    fixture = db.query(Fixture).get(fixture_id)
+
+    if not innings:
+        raise HTTPException(status_code=400, detail="Match not initialized")
+
+    if innings.striker_id is not None:
+        raise HTTPException(status_code=400, detail="Batter already at crease")
+
+    # Validate batter exists in batting team
+    batter = next((p for p in innings.batting_team if p.id == request.batter_id), None)
+    if not batter:
+        raise HTTPException(status_code=400, detail="Invalid batter selection")
+
+    # Validate batter is not already out
+    bi = innings.batter_innings.get(batter.id)
+    if bi and bi.is_out:
+        raise HTTPException(status_code=400, detail="Batter is already out")
+
+    # Validate batter is not already at crease (non-striker)
+    if batter.id == innings.non_striker_id:
+        raise HTTPException(status_code=400, detail="Batter is already at crease")
+
+    # Set as striker
+    innings.striker_id = batter.id
+
+    # Initialize batter innings and state if new batter
+    if batter.id not in innings.batter_innings:
+        innings.batter_innings[batter.id] = BatterInnings(player=batter)
+        innings.batter_states[batter.id] = BatterState(player_id=batter.id)
+
+    # If batter is not the next in batting order, swap their position
+    if innings.next_batter_index < len(innings.batting_order):
+        expected_id = innings.batting_order[innings.next_batter_index]
+        if batter.id != expected_id and batter.id in innings.batting_order:
+            # Find selected batter's position and swap with next_batter_index
+            selected_idx = innings.batting_order.index(batter.id)
+            innings.batting_order[innings.next_batter_index], innings.batting_order[selected_idx] = \
+                innings.batting_order[selected_idx], innings.batting_order[innings.next_batter_index]
+
+    # Advance next_batter_index
+    innings.next_batter_index += 1
 
     return _get_match_state_response(engine, fixture, db)
 
