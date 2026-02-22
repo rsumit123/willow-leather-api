@@ -956,3 +956,17 @@ class ManagerStatsResponse(BaseModel):
     win_percentage: float
     seasons_played: int
     season_history: List[SeasonHistoryEntry] = []
+
+
+# ─── Squad Registration Schemas ─────────────────────────────────────
+
+class SquadRegistrationRequest(BaseModel):
+    player_ids: List[int]
+
+
+class SquadRegistrationResponse(BaseModel):
+    registered_player_ids: List[int]
+    registered_count: int
+    max_allowed: int
+    is_complete: bool
+    tier: str

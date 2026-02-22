@@ -185,7 +185,7 @@ def _setup_promoted_career(db: Session, career: Career, new_tier: str):
     from app.generators import TeamGenerator, PlayerGenerator
     from app.engine.season_engine import SeasonEngine
     from app.engine.calendar_engine import generate_season_calendar
-    from app.api.career import _pick_best_xi
+    from app.api.career import _pick_best_xi, _pick_best_registered_squad, register_squad_for_team
 
     tier_config = TIER_CONFIG[new_tier]
     import random
@@ -234,10 +234,25 @@ def _setup_promoted_career(db: Session, career: Career, new_tier: str):
     db.add(season)
     db.flush()
 
-    # Auto-select XI
+    # Auto-register squads and select XI
+    playing_squad_size = tier_config.get("playing_squad")
+
     for team in teams:
         players = db.query(Player).filter_by(team_id=team.id).all()
-        xi = _pick_best_xi(players)
+
+        # If tier has a playing_squad concept (state: 15 from 25), auto-register best N
+        if playing_squad_size and squad_size > playing_squad_size:
+            registered = _pick_best_registered_squad(players, playing_squad_size)
+            register_squad_for_team(
+                db, career.id, season.id, team.id,
+                [p.id for p in registered],
+            )
+            # Pick XI from the registered squad
+            xi = _pick_best_xi(registered)
+        else:
+            # No registration needed (district) — pick XI from full squad
+            xi = _pick_best_xi(players)
+
         for pos, player in enumerate(xi, 1):
             db.add(PlayingXI(
                 team_id=team.id,

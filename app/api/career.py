@@ -9,7 +9,7 @@ from typing import List, Optional
 from app.database import get_session
 from app.models.career import (
     Career, Season, CareerStatus, SeasonPhase,
-    BoardObjective, GameDay,
+    BoardObjective, GameDay, SquadRegistration,
 )
 from app.models.team import Team
 from app.models.player import Player
@@ -24,7 +24,8 @@ from app.engine.tier_config import TIER_CONFIG
 from app.api.schemas import (
     CareerCreate, CareerResponse, CareerDetail, TeamChoice, TeamResponse,
     SquadResponse, PlayerResponse, PlayingXIRequest, PlayingXIPlayerResponse,
-    PlayingXIResponse, PlayingXIValidationResponse
+    PlayingXIResponse, PlayingXIValidationResponse,
+    SquadRegistrationRequest, SquadRegistrationResponse,
 )
 
 router = APIRouter(prefix="/career", tags=["Career"])
@@ -275,6 +276,10 @@ def get_career(
         status=CareerStatus(career.status.value),
         current_season_number=career.current_season_number,
         user_team_id=career.user_team_id,
+        tier=career.tier,
+        reputation=career.reputation,
+        trophies_won=career.trophies_won,
+        game_over=career.game_over,
         created_at=career.created_at,
         user_team=TeamResponse.model_validate(user_team) if user_team else None,
     )
@@ -475,6 +480,23 @@ def set_playing_xi(
             detail="Some players not found or don't belong to your team"
         )
 
+    # If tier has squad registration (state), verify all XI players are in registered squad
+    tier_config = TIER_CONFIG.get(career.tier, {})
+    if tier_config.get("playing_squad"):
+        registered = db.query(SquadRegistration).filter_by(
+            career_id=career_id,
+            season_id=season.id,
+            team_id=career.user_team_id,
+        ).all()
+        registered_ids = {r.player_id for r in registered}
+        if registered_ids:  # only enforce if registration exists
+            invalid_ids = set(request.player_ids) - registered_ids
+            if invalid_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"All playing XI must be from the registered squad. {len(invalid_ids)} player(s) not registered.",
+                )
+
     # Validate the XI
     validation = PlayingXIValidator.validate(players)
     if not validation["valid"]:
@@ -567,4 +589,209 @@ def validate_playing_xi(
         valid=validation["valid"],
         errors=validation["errors"],
         breakdown=validation["breakdown"]
+    )
+
+
+# ─── Squad Registration (State tier: pick 15 from 25) ───────────────
+
+
+def _pick_best_registered_squad(players: list, squad_size: int) -> list:
+    """Pick the best N players from a full squad ensuring role balance for registration."""
+    from app.models.player import PlayerRole
+
+    by_role = {}
+    for p in players:
+        role = p.role.value if hasattr(p.role, 'value') else p.role
+        by_role.setdefault(role, []).append(p)
+
+    # Sort each role by overall_rating descending
+    for role in by_role:
+        by_role[role].sort(key=lambda p: p.overall_rating, reverse=True)
+
+    selected = []
+    # Ensure minimum role coverage for a balanced registered squad:
+    # 1 WK, 5 BAT, 4 BOWL, 3 AR = 13, then fill 2 more from best available
+    for role, count in [("wicket_keeper", 1), ("batsman", 5), ("bowler", 4), ("all_rounder", 3)]:
+        available = by_role.get(role, [])
+        selected.extend(available[:count])
+
+    # Fill remaining slots from unused players by rating
+    used_ids = {p.id for p in selected}
+    remaining = sorted(
+        [p for p in players if p.id not in used_ids],
+        key=lambda p: p.overall_rating, reverse=True
+    )
+    selected.extend(remaining[:squad_size - len(selected)])
+
+    return selected[:squad_size]
+
+
+def register_squad_for_team(
+    db: Session,
+    career_id: int,
+    season_id: int,
+    team_id: int,
+    player_ids: list[int],
+):
+    """Save squad registration rows. Clears previous registration for same team/season."""
+    # Clear existing
+    db.query(SquadRegistration).filter_by(
+        career_id=career_id,
+        season_id=season_id,
+        team_id=team_id,
+    ).delete()
+
+    for pid in player_ids:
+        db.add(SquadRegistration(
+            career_id=career_id,
+            season_id=season_id,
+            team_id=team_id,
+            player_id=pid,
+        ))
+    db.flush()
+
+
+@router.get("/{career_id}/squad-registration", response_model=SquadRegistrationResponse)
+def get_squad_registration(
+    career_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get registered squad for the user's team in the current season."""
+    career = db.query(Career).filter_by(id=career_id, user_id=current_user.id).first()
+    if not career:
+        raise HTTPException(status_code=404, detail="Career not found")
+
+    tier_config = TIER_CONFIG.get(career.tier, {})
+    playing_squad = tier_config.get("playing_squad", tier_config.get("squad_size", 15))
+
+    # Get current season
+    season = db.query(Season).filter_by(
+        career_id=career_id,
+        season_number=career.current_season_number,
+    ).first()
+    if not season:
+        raise HTTPException(status_code=404, detail="Season not found")
+
+    registrations = db.query(SquadRegistration).filter_by(
+        career_id=career_id,
+        season_id=season.id,
+        team_id=career.user_team_id,
+    ).all()
+
+    registered_ids = [r.player_id for r in registrations]
+
+    return SquadRegistrationResponse(
+        registered_player_ids=registered_ids,
+        registered_count=len(registered_ids),
+        max_allowed=playing_squad,
+        is_complete=len(registered_ids) == playing_squad,
+        tier=career.tier,
+    )
+
+
+@router.post("/{career_id}/squad-registration", response_model=SquadRegistrationResponse)
+def set_squad_registration(
+    career_id: int,
+    request: SquadRegistrationRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Set the registered playing squad for the user's team.
+    At state tier: must register exactly 15 from 25.
+    Validates player ownership, count, keeper presence, and overseas limits.
+    Also auto-selects the best playing XI from the registered players.
+    """
+    career = db.query(Career).filter_by(id=career_id, user_id=current_user.id).first()
+    if not career:
+        raise HTTPException(status_code=404, detail="Career not found")
+
+    tier = career.tier
+    tier_config = TIER_CONFIG.get(tier, {})
+    playing_squad = tier_config.get("playing_squad")
+
+    # For tiers without a playing_squad concept (district), skip validation
+    if not playing_squad:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Squad registration is not required for {tier} tier",
+        )
+
+    # Get current season
+    season = db.query(Season).filter_by(
+        career_id=career_id,
+        season_number=career.current_season_number,
+    ).first()
+    if not season:
+        raise HTTPException(status_code=404, detail="Season not found")
+
+    # Validate count
+    if len(request.player_ids) != playing_squad:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Must register exactly {playing_squad} players, got {len(request.player_ids)}",
+        )
+
+    # Validate uniqueness
+    if len(set(request.player_ids)) != len(request.player_ids):
+        raise HTTPException(status_code=400, detail="Duplicate player IDs not allowed")
+
+    # Validate all players belong to user's team
+    players = db.query(Player).filter(
+        Player.id.in_(request.player_ids),
+        Player.team_id == career.user_team_id,
+    ).all()
+
+    if len(players) != len(request.player_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="Some players not found or don't belong to your team",
+        )
+
+    # Validate at least 1 wicket keeper
+    from app.models.player import PlayerRole
+    wk_count = sum(1 for p in players if p.role == PlayerRole.WICKET_KEEPER)
+    if wk_count < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Must include at least 1 wicket keeper in registered squad",
+        )
+
+    # Validate overseas limit
+    max_overseas = tier_config.get("max_overseas", 4)
+    overseas_count = sum(1 for p in players if p.is_overseas)
+    if overseas_count > max_overseas:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Max {max_overseas} overseas players allowed, got {overseas_count}",
+        )
+
+    # Save registration
+    register_squad_for_team(
+        db, career.id, season.id, career.user_team_id, request.player_ids,
+    )
+
+    # Auto-select best playing XI from the registered 15
+    xi = _pick_best_xi(players)
+    db.query(PlayingXI).filter_by(
+        team_id=career.user_team_id,
+        season_id=season.id,
+    ).delete()
+    for pos, player in enumerate(xi, 1):
+        db.add(PlayingXI(
+            team_id=career.user_team_id,
+            season_id=season.id,
+            player_id=player.id,
+            position=pos,
+        ))
+
+    db.commit()
+
+    return SquadRegistrationResponse(
+        registered_player_ids=request.player_ids,
+        registered_count=len(request.player_ids),
+        max_allowed=playing_squad,
+        is_complete=True,
+        tier=tier,
     )

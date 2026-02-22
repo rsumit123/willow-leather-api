@@ -504,3 +504,24 @@ class BoardObjective(Base):
 
     def __repr__(self):
         return f"<BoardObjective: {self.description}>"
+
+
+class SquadRegistration(Base):
+    """
+    Records a player registered in the playing squad for a season.
+    At state tier, teams have 25 players but register 15 for the tournament.
+    """
+    __tablename__ = "squad_registration"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    career_id: Mapped[int] = mapped_column(ForeignKey("careers.id", ondelete="CASCADE"), index=True)
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id", ondelete="CASCADE"))
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"))
+
+    # Relationships
+    player: Mapped["Player"] = relationship("Player")
+    team: Mapped["Team"] = relationship("Team")
+
+    def __repr__(self):
+        return f"<SquadRegistration team={self.team_id} player={self.player_id}>"
