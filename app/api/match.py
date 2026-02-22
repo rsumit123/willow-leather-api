@@ -969,8 +969,9 @@ def play_ball(
         # Reset current bowler so next over needs selection
         innings.current_bowler_id = None
         
-        # Rotate strike at end of over
-        innings.striker_id, innings.non_striker_id = innings.non_striker_id, innings.striker_id
+        # Rotate strike at end of over — skip if batter selection pending
+        if innings.striker_id is not None:
+            innings.striker_id, innings.non_striker_id = innings.non_striker_id, innings.striker_id
 
     # Check if innings complete
     if innings.is_innings_complete:

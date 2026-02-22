@@ -21,6 +21,7 @@ from app.engine.transfer_engine import (
     release_and_generate_pool,
     prepare_next_season,
     create_mini_auction,
+    _score_player,
     RETENTION_PRICES,
     MAX_RETENTIONS,
 )
@@ -157,16 +158,24 @@ def get_retention_candidates_endpoint(
     if not user_team:
         raise HTTPException(status_code=404, detail="User team not found")
 
-    candidates = get_retention_candidates(db, user_team, season)
-
-    # Also return full squad (slots > 4 can't be retained but user sees them)
+    # Return ALL squad players as retainable candidates, sorted by retention score
     all_players = db.query(Player).filter_by(team_id=user_team.id).all()
 
+    # Score and sort all players
+    scored = []
+    for player in all_players:
+        stats = db.query(PlayerSeasonStats).filter_by(
+            season_id=season.id, player_id=player.id
+        ).first()
+        score = _score_player(player, stats)
+        scored.append((player, score, stats))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+
     result = []
-    # First add retention candidates (top 4)
-    for c in candidates:
-        player = c["player"]
-        stats = c["season_stats"]
+    for i, (player, score, stats) in enumerate(scored):
+        # Slot 1-4 get retention prices; all players are selectable
+        slot = i + 1
         result.append(RetentionCandidateResponse(
             player_id=player.id,
             player_name=player.name,
@@ -177,31 +186,9 @@ def get_retention_candidates_endpoint(
             age=player.age,
             season_runs=stats.runs if stats else 0,
             season_wickets=stats.wickets if stats else 0,
-            retention_slot=c["retention_slot"],
-            retention_price=c["retention_price"],
+            retention_slot=slot,
+            retention_price=RETENTION_PRICES.get(slot, 0),
         ))
-
-    # Add remaining players (slot > 4, won't be retained)
-    candidate_ids = {c["player"].id for c in candidates}
-    for player in all_players:
-        if player.id not in candidate_ids:
-            stats = db.query(PlayerSeasonStats).filter_by(
-                season_id=season.id, player_id=player.id
-            ).first()
-            slot = len(result) + 1
-            result.append(RetentionCandidateResponse(
-                player_id=player.id,
-                player_name=player.name,
-                role=player.role.value if hasattr(player.role, 'value') else str(player.role),
-                overall_rating=player.overall_rating,
-                is_overseas=player.is_overseas,
-                form=getattr(player, 'form', 1.0) or 1.0,
-                age=player.age,
-                season_runs=stats.runs if stats else 0,
-                season_wickets=stats.wickets if stats else 0,
-                retention_slot=slot,
-                retention_price=RETENTION_PRICES.get(slot, 0),
-            ))
 
     return result
 

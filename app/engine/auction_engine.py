@@ -93,12 +93,27 @@ class AuctionEngine:
         Set up the auction with all teams and players.
         Players are categorized and ordered by category, then by base_price/rating within category.
         """
-        # Create team auction states
+        # Create team auction states — account for retained players
         for team in teams:
+            retained = self.session.query(Player).filter_by(team_id=team.id).all()
+            retained_count = len(retained)
+            overseas = sum(1 for p in retained if p.is_overseas)
+            role_val = lambda p: p.role.value if hasattr(p.role, 'value') else str(p.role)
+            batsmen = sum(1 for p in retained if role_val(p) == 'batsman')
+            bowlers = sum(1 for p in retained if role_val(p) == 'bowler')
+            all_rounders = sum(1 for p in retained if role_val(p) == 'all_rounder')
+            wk = sum(1 for p in retained if role_val(p) == 'wicket_keeper')
+
             state = TeamAuctionState(
                 auction_id=self.auction.id,
                 team_id=team.id,
-                remaining_budget=team.budget,
+                remaining_budget=team.remaining_budget,
+                total_players=retained_count,
+                overseas_players=overseas,
+                batsmen=batsmen,
+                bowlers=bowlers,
+                all_rounders=all_rounders,
+                wicket_keepers=wk,
             )
             self.session.add(state)
             self._team_states[team.id] = state
