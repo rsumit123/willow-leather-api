@@ -581,6 +581,87 @@ class PlayerGenerator:
         return players
 
     @classmethod
+    def generate_team_squad(cls, team_id: int, squad_size: int = 15,
+                            max_rating: int = 65, all_indian: bool = True) -> list[Player]:
+        """
+        Generate a fixed squad of players for a team (used in District/State tiers).
+
+        Ensures a balanced composition:
+        - 4-5 batsmen, 4-5 bowlers, 2-3 all-rounders, 1-2 wicket-keepers
+
+        Args:
+            team_id: Team to assign players to
+            squad_size: Number of players to generate
+            max_rating: Maximum overall rating (skills capped)
+            all_indian: If True, all players are Indian (no overseas)
+        """
+        # Determine composition
+        composition = []
+        composition += [PlayerRole.WICKET_KEEPER] * 2
+        composition += [PlayerRole.ALL_ROUNDER] * 3
+        composition += [PlayerRole.BATSMAN] * 5
+        composition += [PlayerRole.BOWLER] * 5
+
+        # Trim or extend to squad_size
+        if len(composition) > squad_size:
+            composition = composition[:squad_size]
+        while len(composition) < squad_size:
+            composition.append(random.choice([PlayerRole.BATSMAN, PlayerRole.BOWLER]))
+
+        random.shuffle(composition)
+
+        # Map max_rating to appropriate tiers
+        # District (max 65): all "solid" tier (base 58-65, OVR ~55-68)
+        # State (max 80): mix of "good" and "solid"
+        if max_rating <= 65:
+            tier_choices = ["solid"]
+        elif max_rating <= 80:
+            tier_choices = ["solid", "good", "good"]
+        else:
+            tier_choices = ["solid", "good", "star"]
+
+        nationality = "India" if all_indian else None
+
+        players = []
+        for role in composition:
+            tier = random.choice(tier_choices)
+            player = cls.generate_player(role=role, nationality=nationality, tier=tier)
+            player.team_id = team_id
+
+            # Clamp overall rating to max
+            cls._cap_player_rating(player, max_rating)
+
+            # Clear auction-related fields (no auction in district/state)
+            player.base_price = 0
+            player.sold_price = 0
+
+            players.append(player)
+
+        return players
+
+    @classmethod
+    def _cap_player_rating(cls, player: Player, max_rating: int):
+        """
+        Reduce a player's primary attributes to ensure overall_rating <= max_rating.
+        Reduces primary stat iteratively until under the cap.
+        """
+        while player.overall_rating > max_rating:
+            diff = player.overall_rating - max_rating + 1
+            if player.role == PlayerRole.BATSMAN:
+                player.batting = max(20, player.batting - diff)
+            elif player.role == PlayerRole.BOWLER:
+                player.bowling = max(20, player.bowling - diff)
+            elif player.role == PlayerRole.ALL_ROUNDER:
+                reduce = max(1, diff // 2)
+                player.batting = max(20, player.batting - reduce)
+                player.bowling = max(20, player.bowling - reduce)
+            elif player.role == PlayerRole.WICKET_KEEPER:
+                reduce_bat = max(1, (diff * 5) // 9)
+                reduce_field = max(1, (diff * 4) // 9)
+                player.batting = max(20, player.batting - reduce_bat)
+                player.fielding = max(20, player.fielding - reduce_field)
+
+    @classmethod
     def save_players_to_db(cls, players: list[Player]) -> None:
         """Save generated players to database"""
         session = get_session()

@@ -30,6 +30,42 @@ class SeasonPhase(enum.Enum):
     TRANSFER_WINDOW = "transfer_window"
 
 
+class CareerTier(enum.Enum):
+    DISTRICT = "district"
+    STATE = "state"
+    IPL = "ipl"
+
+
+class DayType(enum.Enum):
+    MATCH_DAY = "match_day"
+    TRAINING = "training"
+    REST = "rest"
+    TRAVEL = "travel"
+    EVENT = "event"
+
+
+class NotificationType(enum.Enum):
+    BOARD_OBJECTIVE = "board_objective"
+    MATCH_RESULT = "match_result"
+    INJURY = "injury"
+    PROMOTION = "promotion"
+    SACKED = "sacked"
+    TRANSFER = "transfer"
+    MILESTONE = "milestone"
+    TRAINING = "training"
+
+
+class DrillType(enum.Enum):
+    NETS_BATTING = "nets_batting"
+    BOWLING_PRACTICE = "bowling_practice"
+    FIELDING_DRILLS = "fielding_drills"
+    FITNESS_CAMP = "fitness_camp"
+    SPIN_WORKSHOP = "spin_workshop"
+    PACE_HANDLING = "pace_handling"
+    POWER_HITTING = "power_hitting"
+    DEATH_BOWLING = "death_bowling"
+
+
 class Career(Base):
     """
     Represents a single career playthrough.
@@ -51,6 +87,15 @@ class Career(Base):
     status: Mapped[CareerStatus] = mapped_column(Enum(CareerStatus), default=CareerStatus.SETUP)
     current_season_number: Mapped[int] = mapped_column(Integer, default=1)
 
+    # Tier progression
+    tier: Mapped[str] = mapped_column(String(20), default="ipl")  # district, state, ipl
+    reputation: Mapped[int] = mapped_column(Integer, default=0)
+    trophies_won: Mapped[int] = mapped_column(Integer, default=0)
+    seasons_played: Mapped[int] = mapped_column(Integer, default=0)
+    promoted_at_season: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    game_over: Mapped[bool] = mapped_column(Boolean, default=False)
+    game_over_reason: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
     # User's team
     user_team_id: Mapped[Optional[int]] = mapped_column(ForeignKey("teams.id"), nullable=True)
     user_team: Mapped[Optional["Team"]] = relationship("Team", foreign_keys=[user_team_id])
@@ -59,7 +104,7 @@ class Career(Base):
     seasons: Mapped[List["Season"]] = relationship("Season", back_populates="career", order_by="Season.season_number")
 
     def __repr__(self):
-        return f"<Career '{self.name}' - Season {self.current_season_number}>"
+        return f"<Career '{self.name}' - {self.tier} Season {self.current_season_number}>"
 
 
 class Season(Base):
@@ -373,3 +418,89 @@ class PlayerRetention(Base):
 
     def __repr__(self):
         return f"<PlayerRetention: slot {self.retention_slot} - {self.retention_price}>"
+
+
+class GameDay(Base):
+    """
+    A single day in the game calendar. Maps to a date and an activity type.
+    """
+    __tablename__ = "game_days"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    career_id: Mapped[int] = mapped_column(ForeignKey("careers.id"), index=True)
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"))
+
+    date: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD
+    day_type: Mapped[DayType] = mapped_column(Enum(DayType), default=DayType.REST)
+    fixture_id: Mapped[Optional[int]] = mapped_column(ForeignKey("fixtures.id"), nullable=True)
+    event_description: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    def __repr__(self):
+        return f"<GameDay {self.date}: {self.day_type.value}>"
+
+
+class Notification(Base):
+    """
+    In-game notification for the manager inbox.
+    """
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    career_id: Mapped[int] = mapped_column(ForeignKey("careers.id"), index=True)
+
+    type: Mapped[NotificationType] = mapped_column(Enum(NotificationType))
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    icon: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    read: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    action_url: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    def __repr__(self):
+        return f"<Notification: {self.title}>"
+
+
+class TrainingSession(Base):
+    """
+    A training drill session on a training day.
+    Provides temporary stat boosts to selected players.
+    """
+    __tablename__ = "training_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    career_id: Mapped[int] = mapped_column(ForeignKey("careers.id"), index=True)
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"))
+    game_day_id: Mapped[int] = mapped_column(ForeignKey("game_days.id"))
+
+    drill_type: Mapped[DrillType] = mapped_column(Enum(DrillType))
+    player_ids_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON list of player IDs
+    boost_attribute: Mapped[str] = mapped_column(String(50))  # "batting", "bowling", etc.
+    boost_amount: Mapped[int] = mapped_column(Integer, default=2)
+    boost_expires_after_matches: Mapped[int] = mapped_column(Integer, default=2)
+    matches_remaining: Mapped[int] = mapped_column(Integer, default=2)
+
+    def __repr__(self):
+        return f"<TrainingSession: {self.drill_type.value} +{self.boost_amount}>"
+
+
+class BoardObjective(Base):
+    """
+    Board objective for the current season.
+    Defines what the manager must achieve and consequences.
+    """
+    __tablename__ = "board_objectives"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    career_id: Mapped[int] = mapped_column(ForeignKey("careers.id"), index=True)
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"))
+
+    description: Mapped[str] = mapped_column(String(200))
+    target_type: Mapped[str] = mapped_column(String(50))  # "finish_position", "win_count", "win_trophy"
+    target_value: Mapped[int] = mapped_column(Integer)
+    achieved: Mapped[bool] = mapped_column(Boolean, default=False)
+    consequence: Mapped[str] = mapped_column(String(50))  # "promotion", "stay", "sacked"
+
+    def __repr__(self):
+        return f"<BoardObjective: {self.description}>"

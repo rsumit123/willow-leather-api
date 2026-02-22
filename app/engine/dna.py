@@ -131,7 +131,7 @@ class PitchDNA:
     deterioration: int = 35
 
 
-# Pitch presets
+# Pitch presets — IPL / State level
 PITCHES = {
     "green_seamer": PitchDNA("green_seamer", pace_assist=80, spin_assist=15, bounce=70, carry=85, deterioration=25),
     "dust_bowl":    PitchDNA("dust_bowl",    pace_assist=20, spin_assist=85, bounce=35, carry=45, deterioration=80),
@@ -139,4 +139,9 @@ PITCHES = {
     "bouncy_track": PitchDNA("bouncy_track", pace_assist=75, spin_assist=20, bounce=90, carry=85, deterioration=20),
     "slow_turner":  PitchDNA("slow_turner",  pace_assist=30, spin_assist=60, bounce=40, carry=50, deterioration=55),
     "balanced":     PitchDNA("balanced",     pace_assist=55, spin_assist=45, bounce=60, carry=65, deterioration=35),
+    # District-level pitches — rougher, less predictable
+    "muddy":          PitchDNA("muddy",          pace_assist=25, spin_assist=30, bounce=20, carry=30, deterioration=70),
+    "grassless":      PitchDNA("grassless",      pace_assist=15, spin_assist=75, bounce=30, carry=35, deterioration=85),
+    "uneven_bounce":  PitchDNA("uneven_bounce",  pace_assist=60, spin_assist=40, bounce=95, carry=70, deterioration=50),
+    "village_green":  PitchDNA("village_green",   pace_assist=50, spin_assist=25, bounce=50, carry=55, deterioration=30),
 }

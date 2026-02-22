@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from app.database import get_session
-from app.models.career import Career, Season, CareerStatus, SeasonPhase
+from app.models.career import (
+    Career, Season, CareerStatus, SeasonPhase,
+    BoardObjective, GameDay,
+)
 from app.models.team import Team
 from app.models.player import Player
 from app.models.user import User
@@ -17,6 +20,7 @@ from app.generators import PlayerGenerator, TeamGenerator
 from app.validators.playing_xi_validator import PlayingXIValidator
 from app.auth.utils import get_current_user
 from app.auth.config import settings
+from app.engine.tier_config import TIER_CONFIG
 from app.api.schemas import (
     CareerCreate, CareerResponse, CareerDetail, TeamChoice, TeamResponse,
     SquadResponse, PlayerResponse, PlayingXIRequest, PlayingXIPlayerResponse,
@@ -70,11 +74,10 @@ def create_career(
 ):
     """
     Create a new career.
-    This will:
-    1. Create the career record
-    2. Create all 8 teams (with user's selected team marked)
-    3. Generate player pool for auction
-    4. Create first season
+    All careers start at District tier:
+    - 6 teams with fixed 15-player squads (no auction)
+    - Players capped at 65 OVR, all Indian
+    - Calendar + board objectives auto-generated
     """
     # Check career limit
     existing_count = db.query(Career).filter_by(user_id=current_user.id).count()
@@ -84,21 +87,26 @@ def create_career(
             detail=f"Maximum {MAX_CAREERS} careers allowed. Delete one to create more."
         )
 
-    # Validate team index
-    if career_data.team_index < 0 or career_data.team_index > 7:
-        raise HTTPException(status_code=400, detail="Team index must be 0-7")
+    tier = "district"
+    tier_config = TIER_CONFIG[tier]
 
-    # Create career
+    # Create career at district tier — skip straight to IN_SEASON (no auction)
     career = Career(
         name=career_data.name,
-        status=CareerStatus.PRE_AUCTION,
+        status=CareerStatus.IN_SEASON,
+        tier=tier,
+        reputation=0,
         user_id=current_user.id,
     )
     db.add(career)
-    db.flush()  # Get career ID
+    db.flush()
 
-    # Create teams for this career
-    teams = TeamGenerator.create_teams(career_id=career.id, user_team_index=career_data.team_index)
+    # Create teams — district has 6 teams, user is auto-assigned
+    teams = TeamGenerator.create_teams(
+        career_id=career.id,
+        user_team_index=career_data.team_index,  # None = random
+        tier=tier,
+    )
     for team in teams:
         db.add(team)
     db.flush()
@@ -107,26 +115,47 @@ def create_career(
     user_team = next(t for t in teams if t.is_user_team)
     career.user_team_id = user_team.id
 
-    # Generate players
-    players = PlayerGenerator.generate_player_pool(150)
-    for player in players:
-        db.add(player)
+    # Generate fixed squads for all teams (no auction pool)
+    max_rating = tier_config["max_player_rating"]
+    squad_size = tier_config["squad_size"]
+    all_indian = (tier_config["max_overseas"] == 0)
+
+    for team in teams:
+        players = PlayerGenerator.generate_team_squad(
+            team_id=team.id,
+            squad_size=squad_size,
+            max_rating=max_rating,
+            all_indian=all_indian,
+        )
+        for player in players:
+            db.add(player)
+    db.flush()
 
     # Create first season
     season = Season(
         career_id=career.id,
         season_number=1,
-        phase=SeasonPhase.NOT_STARTED,
+        phase=SeasonPhase.LEAGUE_STAGE,
+        total_league_matches=tier_config["total_league_matches"],
     )
     db.add(season)
-
-    # Create auction for the season
     db.flush()
-    auction = Auction(
-        season_id=season.id,
-        status=AuctionStatus.NOT_STARTED,
-    )
-    db.add(auction)
+
+    # Auto-select playing XI for all teams (needs season.id)
+    _auto_select_all_xi(teams, season.id, db)
+
+    # Generate league fixtures
+    from app.engine.season_engine import SeasonEngine
+    engine = SeasonEngine(db, season)
+    engine.initialize_team_stats(teams)
+    fixtures = engine.generate_league_fixtures(teams)
+
+    # Generate calendar from fixtures
+    from app.engine.calendar_engine import generate_season_calendar
+    generate_season_calendar(db, career, season, fixtures)
+
+    # Create board objectives
+    _create_district_objectives(db, career.id, season.id)
 
     db.commit()
     db.refresh(career)
@@ -137,9 +166,84 @@ def create_career(
         status=CareerStatus(career.status.value),
         current_season_number=career.current_season_number,
         user_team_id=career.user_team_id,
+        tier=career.tier,
+        reputation=career.reputation,
+        trophies_won=career.trophies_won,
+        game_over=career.game_over,
         created_at=career.created_at,
         user_team=TeamResponse.model_validate(user_team) if user_team else None,
     )
+
+
+def _auto_select_all_xi(teams: list, season_id: int, db: Session):
+    """Auto-select best playing XI for all teams (district: pick 11 from 15)."""
+    from app.models.player import Player
+
+    for team in teams:
+        players = db.query(Player).filter_by(team_id=team.id).all()
+        xi = _pick_best_xi(players)
+        for pos, player in enumerate(xi, 1):
+            db.add(PlayingXI(
+                team_id=team.id,
+                season_id=season_id,
+                player_id=player.id,
+                position=pos,
+            ))
+    db.flush()
+
+
+def _pick_best_xi(players: list) -> list:
+    """Pick the best 11 from a squad ensuring role balance."""
+    from app.models.player import PlayerRole
+
+    by_role = {}
+    for p in players:
+        role = p.role.value if hasattr(p.role, 'value') else p.role
+        by_role.setdefault(role, []).append(p)
+
+    # Sort each role by overall_rating descending
+    for role in by_role:
+        by_role[role].sort(key=lambda p: p.overall_rating, reverse=True)
+
+    xi = []
+    # Pick: 1 WK, 4 BAT, 3 BOWL, 2 AR, fill remaining from best available
+    for role, count in [("wicket_keeper", 1), ("batsman", 4), ("bowler", 3), ("all_rounder", 2)]:
+        available = by_role.get(role, [])
+        xi.extend(available[:count])
+
+    # Fill remaining from unused players
+    used_ids = {p.id for p in xi}
+    remaining = sorted(
+        [p for p in players if p.id not in used_ids],
+        key=lambda p: p.overall_rating, reverse=True
+    )
+    xi.extend(remaining[:11 - len(xi)])
+
+    return xi[:11]
+
+
+def _create_district_objectives(db: Session, career_id: int, season_id: int):
+    """Create board objectives for a district season."""
+    objectives = [
+        BoardObjective(
+            career_id=career_id,
+            season_id=season_id,
+            description="Win the District Cup",
+            target_type="win_trophy",
+            target_value=1,
+            consequence="promotion",
+        ),
+        BoardObjective(
+            career_id=career_id,
+            season_id=season_id,
+            description="Finish in Top 4",
+            target_type="finish_position",
+            target_value=4,
+            consequence="stay",
+        ),
+    ]
+    for obj in objectives:
+        db.add(obj)
 
 
 @router.get("/list", response_model=List[CareerResponse])

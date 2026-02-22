@@ -16,6 +16,10 @@ from app.api.season import router as season_router
 from app.api.match import router as match_router
 from app.api.auth import router as auth_router
 from app.api.transfer import router as transfer_router
+from app.api.calendar import router as calendar_router
+from app.api.notification import router as notification_router
+from app.api.training import router as training_router
+from app.api.progression import router as progression_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -55,6 +59,10 @@ app.include_router(auction_router, prefix="/api")
 app.include_router(season_router, prefix="/api")
 app.include_router(match_router, prefix="/api")
 app.include_router(transfer_router, prefix="/api")
+app.include_router(calendar_router, prefix="/api")
+app.include_router(notification_router, prefix="/api")
+app.include_router(training_router, prefix="/api")
+app.include_router(progression_router, prefix="/api")
 
 
 @app.on_event("startup")

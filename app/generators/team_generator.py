@@ -1,9 +1,150 @@
 """
-Team Generator - Creates 8 fictional IPL-style franchise teams
+Team Generator - Creates fictional franchise teams for all tiers.
 """
+import random
 from app.models.team import Team
 from app.database import get_session
 
+
+# ─── District-level teams (6 teams, small-town feel) ────────────────
+
+DISTRICT_TEAMS = [
+    {
+        "name": "Jamshedpur Tigers",
+        "short_name": "JT",
+        "city": "Jamshedpur",
+        "home_ground": "Keenan Stadium",
+        "primary_color": "#D97706",
+        "secondary_color": "#1F2937",
+        "budget": 0,
+    },
+    {
+        "name": "Ranchi Rockets",
+        "short_name": "RR",
+        "city": "Ranchi",
+        "home_ground": "JSCA Oval",
+        "primary_color": "#DC2626",
+        "secondary_color": "#FFFFFF",
+        "budget": 0,
+    },
+    {
+        "name": "Bokaro Blasters",
+        "short_name": "BB",
+        "city": "Bokaro",
+        "home_ground": "City Park Ground",
+        "primary_color": "#2563EB",
+        "secondary_color": "#F59E0B",
+        "budget": 0,
+    },
+    {
+        "name": "Dhanbad Dynamos",
+        "short_name": "DD",
+        "city": "Dhanbad",
+        "home_ground": "Coal India Ground",
+        "primary_color": "#059669",
+        "secondary_color": "#000000",
+        "budget": 0,
+    },
+    {
+        "name": "Hazaribagh Hawks",
+        "short_name": "HH",
+        "city": "Hazaribagh",
+        "home_ground": "Municipal Ground",
+        "primary_color": "#7C3AED",
+        "secondary_color": "#E5E7EB",
+        "budget": 0,
+    },
+    {
+        "name": "Deoghar Devils",
+        "short_name": "DV",
+        "city": "Deoghar",
+        "home_ground": "Deoghar Sports Complex",
+        "primary_color": "#BE185D",
+        "secondary_color": "#1E3A5F",
+        "budget": 0,
+    },
+]
+
+
+# ─── State-level teams (8 teams, Ranji Trophy / state T20 feel) ────
+
+STATE_TEAMS = [
+    {
+        "name": "Bengal Royals",
+        "short_name": "BR",
+        "city": "Kolkata",
+        "home_ground": "Eden Gardens",
+        "primary_color": "#7C3AED",
+        "secondary_color": "#FBBF24",
+        "budget": 300000000,
+    },
+    {
+        "name": "Maharashtra Warriors",
+        "short_name": "MW",
+        "city": "Pune",
+        "home_ground": "MCA Stadium",
+        "primary_color": "#EA580C",
+        "secondary_color": "#1E3A5F",
+        "budget": 300000000,
+    },
+    {
+        "name": "Karnataka Lions",
+        "short_name": "KL",
+        "city": "Bangalore",
+        "home_ground": "M. Chinnaswamy Stadium",
+        "primary_color": "#DC2626",
+        "secondary_color": "#000000",
+        "budget": 300000000,
+    },
+    {
+        "name": "Tamil Nadu Kings",
+        "short_name": "TK",
+        "city": "Chennai",
+        "home_ground": "M.A. Chidambaram Stadium",
+        "primary_color": "#FBBF24",
+        "secondary_color": "#1E40AF",
+        "budget": 300000000,
+    },
+    {
+        "name": "Delhi Dashers",
+        "short_name": "DD",
+        "city": "Delhi",
+        "home_ground": "Arun Jaitley Stadium",
+        "primary_color": "#2563EB",
+        "secondary_color": "#DC2626",
+        "budget": 300000000,
+    },
+    {
+        "name": "Gujarat Gladiators",
+        "short_name": "GG",
+        "city": "Ahmedabad",
+        "home_ground": "Narendra Modi Stadium",
+        "primary_color": "#0891B2",
+        "secondary_color": "#F97316",
+        "budget": 300000000,
+    },
+    {
+        "name": "Rajasthan Rangers",
+        "short_name": "RJ",
+        "city": "Jaipur",
+        "home_ground": "Sawai Mansingh Stadium",
+        "primary_color": "#DB2777",
+        "secondary_color": "#1E3A5F",
+        "budget": 300000000,
+    },
+    {
+        "name": "Punjab Panthers",
+        "short_name": "PP",
+        "city": "Mohali",
+        "home_ground": "PCA Stadium",
+        "primary_color": "#B91C1C",
+        "secondary_color": "#9CA3AF",
+        "budget": 300000000,
+    },
+]
+
+
+# ─── IPL-level teams (8 teams, franchise feel) ─────────────────────
 
 # 8 Fictional IPL-style teams
 FRANCHISE_TEAMS = [
@@ -82,23 +223,37 @@ FRANCHISE_TEAMS = [
 ]
 
 
+TIER_TEAM_MAP = {
+    "district": DISTRICT_TEAMS,
+    "state": STATE_TEAMS,
+    "ipl": FRANCHISE_TEAMS,
+}
+
+
 class TeamGenerator:
-    """Generates the 8 franchise teams for a career"""
+    """Generates franchise teams for any tier"""
 
     @classmethod
-    def create_teams(cls, career_id: int, user_team_index: int = 0) -> list[Team]:
+    def create_teams(cls, career_id: int, user_team_index: int = 0, tier: str = "ipl") -> list[Team]:
         """
-        Create all 8 franchise teams for a career.
+        Create teams for a career.
 
         Args:
             career_id: ID of the career these teams belong to
-            user_team_index: Index (0-7) of the team the user wants to manage
+            user_team_index: Index of the team the user manages.
+                For district (-1 or None = random assignment).
+            tier: "district", "state", or "ipl"
 
         Returns:
             List of Team objects (not yet saved to DB)
         """
+        team_list = TIER_TEAM_MAP.get(tier, FRANCHISE_TEAMS)
+
+        if user_team_index is None or user_team_index < 0:
+            user_team_index = random.randint(0, len(team_list) - 1)
+
         teams = []
-        for i, team_data in enumerate(FRANCHISE_TEAMS):
+        for i, team_data in enumerate(team_list):
             team = Team(
                 career_id=career_id,
                 name=team_data["name"],
@@ -122,7 +277,6 @@ class TeamGenerator:
             for team in teams:
                 session.add(team)
             session.commit()
-            # Refresh to get IDs
             for team in teams:
                 session.refresh(team)
             return teams
@@ -130,8 +284,9 @@ class TeamGenerator:
             session.close()
 
     @classmethod
-    def get_team_choices(cls) -> list[dict]:
+    def get_team_choices(cls, tier: str = "ipl") -> list[dict]:
         """Get list of teams for user selection"""
+        team_list = TIER_TEAM_MAP.get(tier, FRANCHISE_TEAMS)
         return [
             {
                 "index": i,
@@ -139,5 +294,5 @@ class TeamGenerator:
                 "short_name": t["short_name"],
                 "city": t["city"],
             }
-            for i, t in enumerate(FRANCHISE_TEAMS)
+            for i, t in enumerate(team_list)
         ]

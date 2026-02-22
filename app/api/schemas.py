@@ -111,7 +111,7 @@ class PlayerBrief(BaseModel):
 # Career Schemas
 class CareerCreate(BaseModel):
     name: str
-    team_index: int  # 0-7 for team selection
+    team_index: Optional[int] = None  # 0-7 for IPL team selection. None for district (auto-assigned).
 
 
 class CareerResponse(BaseModel):
@@ -120,6 +120,10 @@ class CareerResponse(BaseModel):
     status: CareerStatusEnum
     current_season_number: int
     user_team_id: Optional[int] = None
+    tier: str = "ipl"
+    reputation: int = 0
+    trophies_won: int = 0
+    game_over: bool = False
     created_at: datetime
 
     class Config:
@@ -798,3 +802,157 @@ class TransferStatusResponse(BaseModel):
     ai_retentions_done: bool
     players_released: bool
     mini_auction_started: bool
+
+
+# ─── Calendar Schemas ───────────────────────────────────────────────
+
+class GameDayResponse(BaseModel):
+    id: int
+    date: str  # YYYY-MM-DD
+    day_type: str
+    fixture_id: Optional[int] = None
+    event_description: Optional[str] = None
+    is_current: bool = False
+    # Enriched fixture info (populated when day_type is match_day)
+    opponent_name: Optional[str] = None
+    opponent_short_name: Optional[str] = None
+    venue: Optional[str] = None
+    match_number: Optional[int] = None
+    is_user_home: Optional[bool] = None
+
+    @classmethod
+    def from_model(cls, model, fixture=None, user_team_id=None):
+        data = dict(
+            id=model.id,
+            date=model.date,
+            day_type=model.day_type.value if hasattr(model.day_type, 'value') else str(model.day_type),
+            fixture_id=model.fixture_id,
+            event_description=model.event_description,
+            is_current=model.is_current,
+        )
+        if fixture and user_team_id:
+            if fixture.team1_id == user_team_id:
+                opponent = fixture.team2
+                data["is_user_home"] = True
+            else:
+                opponent = fixture.team1
+                data["is_user_home"] = False
+            if opponent:
+                data["opponent_name"] = opponent.name
+                data["opponent_short_name"] = getattr(opponent, "short_name", None)
+            data["venue"] = fixture.venue
+            data["match_number"] = fixture.match_number
+        return cls(**data)
+
+
+class CalendarCurrentResponse(BaseModel):
+    current_day: Optional[GameDayResponse] = None
+    upcoming: List[GameDayResponse] = []
+    has_calendar: bool = False
+
+
+class CalendarMonthResponse(BaseModel):
+    year: int
+    month: int
+    days: List[GameDayResponse] = []
+
+
+# ─── Notification Schemas ───────────────────────────────────────────
+
+class NotificationResponse(BaseModel):
+    id: int
+    type: str
+    title: str
+    body: str
+    icon: Optional[str] = None
+    read: bool = False
+    created_at: datetime
+    action_url: Optional[str] = None
+
+    @classmethod
+    def from_model(cls, model):
+        return cls(
+            id=model.id,
+            type=model.type.value if hasattr(model.type, 'value') else str(model.type),
+            title=model.title,
+            body=model.body,
+            icon=model.icon,
+            read=model.read,
+            created_at=model.created_at,
+            action_url=model.action_url,
+        )
+
+
+# ─── Training Schemas ───────────────────────────────────────────────
+
+class TrainRequest(BaseModel):
+    drill_type: str
+    player_ids: List[int]
+
+
+class DrillResponse(BaseModel):
+    drill_type: str
+    display_name: str
+    description: str
+    boost_attribute: str
+    boost_amount: int
+    duration: int
+    best_for: List[str]
+    icon: str
+
+
+class ActiveBoostResponse(BaseModel):
+    player_id: int
+    boost_attribute: str
+    boost_amount: int
+    matches_remaining: int
+    drill_type: str
+
+
+# ─── Progression Schemas ────────────────────────────────────────────
+
+class ObjectiveResponse(BaseModel):
+    id: int
+    description: str
+    target_type: str
+    target_value: int
+    achieved: bool = False
+    consequence: str
+
+
+class ProgressionStatusResponse(BaseModel):
+    tier: str
+    reputation: int
+    reputation_title: str
+    trophies_won: int
+    seasons_played: int
+    current_season: int
+    game_over: bool = False
+    game_over_reason: Optional[str] = None
+    promotion_condition: Optional[str] = None
+    objectives: List[ObjectiveResponse] = []
+
+
+class SeasonHistoryEntry(BaseModel):
+    season_number: int
+    tier: str
+    team_name: str
+    wins: int
+    losses: int
+    position: Optional[int] = None
+    is_champion: bool = False
+    is_runner_up: bool = False
+    is_current: bool = False
+
+
+class ManagerStatsResponse(BaseModel):
+    manager_name: str
+    avatar_url: Optional[str] = None
+    reputation: int
+    reputation_title: str
+    trophies_won: int
+    total_matches: int
+    total_wins: int
+    win_percentage: float
+    seasons_played: int
+    season_history: List[SeasonHistoryEntry] = []
