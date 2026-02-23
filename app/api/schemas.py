@@ -819,6 +819,7 @@ class GameDayResponse(BaseModel):
     venue: Optional[str] = None
     match_number: Optional[int] = None
     is_user_home: Optional[bool] = None
+    fixture_status: Optional[str] = None  # "scheduled" | "in_progress" | "completed"
 
     @classmethod
     def from_model(cls, model, fixture=None, user_team_id=None):
@@ -842,6 +843,7 @@ class GameDayResponse(BaseModel):
                 data["opponent_short_name"] = getattr(opponent, "short_name", None)
             data["venue"] = fixture.venue
             data["match_number"] = fixture.match_number
+            data["fixture_status"] = fixture.status.value if hasattr(fixture.status, 'value') else str(fixture.status)
         return cls(**data)
 
 

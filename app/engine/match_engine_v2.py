@@ -1190,3 +1190,228 @@ class MatchEngineV2:
             "winner": winner,
             "margin": margin,
         }
+
+    def to_snapshot(self) -> dict:
+        """Serialize the full match engine state to a JSON-serializable dict."""
+        def _serialize_innings(innings: InningsState) -> dict:
+            if innings is None:
+                return None
+            # Serialize batter innings (keyed by player_id)
+            batter_innings = {}
+            for pid, bi in innings.batter_innings.items():
+                batter_innings[str(pid)] = {
+                    "player_id": bi.player.id,
+                    "runs": bi.runs,
+                    "balls": bi.balls,
+                    "fours": bi.fours,
+                    "sixes": bi.sixes,
+                    "is_out": bi.is_out,
+                    "dismissal": bi.dismissal,
+                    "bowler_id": bi.bowler.id if bi.bowler else None,
+                    "fielder_id": bi.fielder.id if bi.fielder else None,
+                }
+            # Serialize bowler spells
+            bowler_spells = {}
+            for pid, bs in innings.bowler_spells.items():
+                bowler_spells[str(pid)] = {
+                    "player_id": bs.player.id,
+                    "overs": bs.overs,
+                    "balls": bs.balls,
+                    "runs": bs.runs,
+                    "wickets": bs.wickets,
+                    "wides": bs.wides,
+                    "no_balls": bs.no_balls,
+                }
+            # Serialize batter states
+            batter_states = {}
+            for pid, state in innings.batter_states.items():
+                batter_states[str(pid)] = {
+                    "player_id": state.player_id,
+                    "balls_faced": state.balls_faced,
+                    "is_settled": state.is_settled,
+                    "is_on_fire": state.is_on_fire,
+                    "recent_outcomes": list(state.recent_outcomes),
+                }
+            # Serialize bowler states
+            bowler_states = {}
+            for pid, state in innings.bowler_states.items():
+                bowler_states[str(pid)] = {
+                    "player_id": state.player_id,
+                    "consecutive_overs": state.consecutive_overs,
+                    "is_tired": state.is_tired,
+                    "has_confidence": state.has_confidence,
+                }
+            return {
+                "batting_team_ids": [p.id for p in innings.batting_team],
+                "bowling_team_ids": [p.id for p in innings.bowling_team],
+                "total_runs": innings.total_runs,
+                "wickets": innings.wickets,
+                "overs": innings.overs,
+                "balls": innings.balls,
+                "target": innings.target,
+                "extras": innings.extras,
+                "striker_id": innings.striker_id,
+                "non_striker_id": innings.non_striker_id,
+                "current_bowler_id": innings.current_bowler_id,
+                "last_bowler_id": innings.last_bowler_id,
+                "batting_order": list(innings.batting_order),
+                "next_batter_index": innings.next_batter_index,
+                "this_over": list(innings.this_over),
+                "batter_innings": batter_innings,
+                "bowler_spells": bowler_spells,
+                "batter_states": batter_states,
+                "bowler_states": bowler_states,
+                "context": {
+                    "pitch_type": innings.context.pitch_type,
+                    "is_pressure_cooker": innings.context.is_pressure_cooker,
+                    "partnership_runs": innings.context.partnership_runs,
+                },
+                "batting_team_id": innings.batting_team_id,
+                "is_second_innings": innings.is_second_innings,
+                "balls_faced": {str(k): v for k, v in innings.balls_faced.items()},
+                "bowler_overs_count": {str(k): v for k, v in innings.bowler_overs_count.items()},
+                "partnership_runs": innings.partnership_runs,
+                "delivery_counts_this_over": dict(innings.delivery_counts_this_over),
+                "matchup_data": {str(k): v for k, v in innings.matchup_data.items()},
+                "pitch_name": innings.pitch.name if hasattr(innings.pitch, "name") else "balanced",
+            }
+
+        # Determine which innings is current
+        current_innings_num = 1
+        if self.current_innings is self.innings2:
+            current_innings_num = 2
+
+        return {
+            "version": 1,
+            "current_innings_num": current_innings_num,
+            "innings1": _serialize_innings(self.innings1),
+            "innings2": _serialize_innings(self.innings2),
+            "pitch_name": self.innings1.pitch.name if self.innings1 and hasattr(self.innings1.pitch, "name") else "balanced",
+        }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: dict, players_by_id: dict) -> "MatchEngineV2":
+        """Reconstruct a MatchEngine from a snapshot dict + fresh Player objects.
+
+        Args:
+            snapshot: dict from to_snapshot()
+            players_by_id: dict mapping player_id (int) -> Player object
+        """
+        engine = cls()
+
+        def _restore_innings(data: dict) -> InningsState:
+            if data is None:
+                return None
+            batting_team = [players_by_id[pid] for pid in data["batting_team_ids"] if pid in players_by_id]
+            bowling_team = [players_by_id[pid] for pid in data["bowling_team_ids"] if pid in players_by_id]
+
+            # Get pitch
+            pitch_name = data.get("pitch_name", "balanced")
+            pitch = PITCHES.get(pitch_name, PITCHES["balanced"])
+
+            innings = InningsState(
+                batting_team=batting_team,
+                bowling_team=bowling_team,
+                total_runs=data["total_runs"],
+                wickets=data["wickets"],
+                overs=data["overs"],
+                balls=data["balls"],
+                target=data.get("target"),
+                extras=data.get("extras", 0),
+                striker_id=data.get("striker_id"),
+                non_striker_id=data.get("non_striker_id"),
+                current_bowler_id=data.get("current_bowler_id"),
+                last_bowler_id=data.get("last_bowler_id"),
+                batting_order=data.get("batting_order", []),
+                next_batter_index=data.get("next_batter_index", 2),
+                this_over=data.get("this_over", []),
+                context=MatchContext(
+                    pitch_type=data["context"]["pitch_type"],
+                    is_pressure_cooker=data["context"]["is_pressure_cooker"],
+                    partnership_runs=data["context"]["partnership_runs"],
+                ),
+                batting_team_id=data.get("batting_team_id"),
+                is_second_innings=data.get("is_second_innings", False),
+                balls_faced={int(k): v for k, v in data.get("balls_faced", {}).items()},
+                bowler_overs_count={int(k): v for k, v in data.get("bowler_overs_count", {}).items()},
+                partnership_runs=data.get("partnership_runs", 0),
+                delivery_counts_this_over=data.get("delivery_counts_this_over", {}),
+                matchup_data={},
+                pitch=pitch,
+            )
+
+            # Restore matchup_data with tuple keys
+            for k, v in data.get("matchup_data", {}).items():
+                try:
+                    key = tuple(map(int, k.strip("()").split(",")))
+                    innings.matchup_data[key] = v
+                except (ValueError, AttributeError):
+                    pass
+
+            # Restore batter innings
+            for pid_str, bi_data in data.get("batter_innings", {}).items():
+                pid = int(pid_str)
+                player = players_by_id.get(bi_data["player_id"], players_by_id.get(pid))
+                if player:
+                    bowler = players_by_id.get(bi_data.get("bowler_id")) if bi_data.get("bowler_id") else None
+                    fielder = players_by_id.get(bi_data.get("fielder_id")) if bi_data.get("fielder_id") else None
+                    innings.batter_innings[pid] = BatterInnings(
+                        player=player,
+                        runs=bi_data["runs"],
+                        balls=bi_data["balls"],
+                        fours=bi_data["fours"],
+                        sixes=bi_data["sixes"],
+                        is_out=bi_data["is_out"],
+                        dismissal=bi_data.get("dismissal", ""),
+                        bowler=bowler,
+                        fielder=fielder,
+                    )
+
+            # Restore bowler spells
+            for pid_str, bs_data in data.get("bowler_spells", {}).items():
+                pid = int(pid_str)
+                player = players_by_id.get(bs_data["player_id"], players_by_id.get(pid))
+                if player:
+                    innings.bowler_spells[pid] = BowlerSpell(
+                        player=player,
+                        overs=bs_data["overs"],
+                        balls=bs_data["balls"],
+                        runs=bs_data["runs"],
+                        wickets=bs_data["wickets"],
+                        wides=bs_data.get("wides", 0),
+                        no_balls=bs_data.get("no_balls", 0),
+                    )
+
+            # Restore batter states
+            for pid_str, st_data in data.get("batter_states", {}).items():
+                pid = int(pid_str)
+                innings.batter_states[pid] = BatterState(
+                    player_id=st_data["player_id"],
+                    balls_faced=st_data["balls_faced"],
+                    is_settled=st_data["is_settled"],
+                    is_on_fire=st_data["is_on_fire"],
+                    recent_outcomes=st_data.get("recent_outcomes", []),
+                )
+
+            # Restore bowler states
+            for pid_str, st_data in data.get("bowler_states", {}).items():
+                pid = int(pid_str)
+                innings.bowler_states[pid] = BowlerState(
+                    player_id=st_data["player_id"],
+                    consecutive_overs=st_data["consecutive_overs"],
+                    is_tired=st_data["is_tired"],
+                    has_confidence=st_data["has_confidence"],
+                )
+
+            return innings
+
+        engine.innings1 = _restore_innings(snapshot.get("innings1"))
+        engine.innings2 = _restore_innings(snapshot.get("innings2"))
+
+        # Set current innings
+        if snapshot.get("current_innings_num") == 2 and engine.innings2:
+            engine.current_innings = engine.innings2
+        else:
+            engine.current_innings = engine.innings1
+
+        return engine

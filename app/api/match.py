@@ -46,6 +46,67 @@ active_matches: Dict[int, MatchEngine] = {}
 completed_match_results: Dict[int, dict] = {}
 
 
+def _save_snapshot(fixture_id: int, engine: MatchEngine, db: Session):
+    """Persist engine state to DB so match survives server restarts."""
+    try:
+        fixture = db.query(Fixture).filter_by(id=fixture_id).first()
+        if fixture and fixture.status == FixtureStatus.IN_PROGRESS:
+            fixture.match_snapshot = json.dumps(engine.to_snapshot())
+            db.commit()
+    except Exception as e:
+        print(f"WARNING: Failed to save match snapshot for fixture {fixture_id}: {e}")
+        db.rollback()
+
+
+def _restore_engine_from_snapshot(fixture: Fixture, db: Session) -> Optional[MatchEngine]:
+    """Restore a MatchEngine from a fixture's DB snapshot. Returns None if no snapshot."""
+    if not fixture.match_snapshot:
+        return None
+    try:
+        snapshot = json.loads(fixture.match_snapshot)
+        # Build players_by_id from both teams
+        team1 = db.query(Team).get(fixture.team1_id)
+        team2 = db.query(Team).get(fixture.team2_id)
+        season = db.query(Season).get(fixture.season_id)
+        team1_players = _get_playing_xi(team1, season.id, db)
+        team2_players = _get_playing_xi(team2, season.id, db)
+        players_by_id = {p.id: p for p in team1_players + team2_players}
+
+        engine = MatchEngine.from_snapshot(snapshot, players_by_id)
+
+        # Restore user_team_id and match_pitch
+        career = db.query(Career).filter_by(id=season.career_id).first()
+        if career:
+            engine.user_team_id = career.user_team_id
+
+        if snapshot.get("pitch_name"):
+            engine.match_pitch = PITCHES.get(snapshot["pitch_name"], list(PITCHES.values())[0])
+        elif engine.innings1 and hasattr(engine.innings1, 'pitch') and engine.innings1.pitch:
+            engine.match_pitch = engine.innings1.pitch
+
+        return engine
+    except Exception as e:
+        print(f"WARNING: Failed to restore match snapshot for fixture {fixture.id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _get_or_restore_engine(fixture_id: int, db: Session) -> MatchEngine:
+    """Get engine from active_matches, or restore from DB snapshot."""
+    if fixture_id in active_matches:
+        return active_matches[fixture_id]
+
+    fixture = db.query(Fixture).get(fixture_id)
+    if fixture and fixture.match_snapshot and fixture.status == FixtureStatus.IN_PROGRESS:
+        engine = _restore_engine_from_snapshot(fixture, db)
+        if engine:
+            active_matches[fixture_id] = engine
+            return engine
+
+    raise HTTPException(status_code=404, detail="Active match session not found")
+
+
 def _parse_traits(traits_json: Optional[str]) -> List[str]:
     """Parse traits JSON string to list of trait strings"""
     if not traits_json:
@@ -653,9 +714,15 @@ def start_match(
     if fixture.status == FixtureStatus.COMPLETED:
         raise HTTPException(status_code=400, detail=f"Match already completed. Result: {fixture.result_summary or 'Unknown'}")
 
-    # If match was in progress but server restarted (lost active state), allow restart
+    # If match was in progress but server restarted (lost active state), try snapshot
     if fixture.status == FixtureStatus.IN_PROGRESS and fixture_id not in active_matches:
-        # Reset to scheduled so we can start fresh
+        if fixture.match_snapshot:
+            # Restore from snapshot instead of resetting
+            engine = _restore_engine_from_snapshot(fixture, db)
+            if engine:
+                active_matches[fixture_id] = engine
+                return _get_match_state_response(engine, fixture, db, career.user_team_id)
+        # No snapshot or restore failed — truly lost, reset
         fixture.status = FixtureStatus.SCHEDULED
         db.commit()
 
@@ -735,9 +802,17 @@ def get_match_state(
     db: Session = Depends(get_db)
 ):
     verify_career_ownership(career_id, current_user.id, db)
+
+    # Try to restore from DB snapshot if not in memory
     if fixture_id not in active_matches:
+        fixture = db.query(Fixture).get(fixture_id)
+        if fixture and fixture.match_snapshot and fixture.status == FixtureStatus.IN_PROGRESS:
+            engine = _restore_engine_from_snapshot(fixture, db)
+            if engine:
+                active_matches[fixture_id] = engine
+                return _get_match_state_response(engine, fixture, db)
         raise HTTPException(status_code=404, detail="Active match session not found")
-    
+
     engine = active_matches[fixture_id]
     _refresh_engine_players(engine, db)
     fixture = db.query(Fixture).get(fixture_id)
@@ -752,10 +827,7 @@ def play_ball(
     db: Session = Depends(get_db)
 ):
     verify_career_ownership(career_id, current_user.id, db)
-    if fixture_id not in active_matches:
-        raise HTTPException(status_code=404, detail="Active match session not found")
-    
-    engine = active_matches[fixture_id]
+    engine = _get_or_restore_engine(fixture_id, db)
     _refresh_engine_players(engine, db)
     innings = engine.current_innings
     fixture = db.query(Fixture).get(fixture_id)
@@ -801,6 +873,7 @@ def play_ball(
                 innings.current_bowler_id = bowler.id
                 print(f"DEBUG: AI is bowling, auto-selected bowler: {bowler.name}")
 
+            _save_snapshot(fixture_id, engine, db)
             # Return early - don't play a ball, just notify innings changed
             return BallResultResponse(
                 outcome="innings_change",
@@ -972,6 +1045,10 @@ def play_ball(
         # Rotate strike at end of over — skip if batter selection pending
         if innings.striker_id is not None:
             innings.striker_id, innings.non_striker_id = innings.non_striker_id, innings.striker_id
+
+    # Save snapshot at over boundaries
+    if innings.overs > 0 and innings.balls == 0:
+        _save_snapshot(fixture_id, engine, db)
 
     # Check if innings complete
     if innings.is_innings_complete:
@@ -1294,6 +1371,7 @@ def _finalize_match_interactive(engine: MatchEngine, fixture: Fixture, db: Sessi
     db.add(match)
 
     fixture.status = FixtureStatus.COMPLETED
+    fixture.match_snapshot = None  # Clear snapshot on completion
     fixture.match_id = match.id
     fixture.winner_id = winner.id if winner else None
     fixture.result_summary = f"{winner.short_name if winner else 'Tie'}"
@@ -1376,10 +1454,7 @@ def simulate_over_interactive(
     db: Session = Depends(get_db)
 ):
     verify_career_ownership(career_id, current_user.id, db)
-    if fixture_id not in active_matches:
-        raise HTTPException(status_code=404, detail="Active match session not found")
-
-    engine = active_matches[fixture_id]
+    engine = _get_or_restore_engine(fixture_id, db)
     _refresh_engine_players(engine, db)
     innings = engine.current_innings
     fixture = db.query(Fixture).get(fixture_id)
@@ -1389,6 +1464,7 @@ def simulate_over_interactive(
     # Simulate rest of the over with user's aggression choice
     aggression = request.aggression if request else "balanced"
     engine.simulate_over(innings, aggression)
+    _save_snapshot(fixture_id, engine, db)
 
     innings_just_changed = False
 
@@ -1441,10 +1517,7 @@ def simulate_innings_interactive(
     db: Session = Depends(get_db)
 ):
     verify_career_ownership(career_id, current_user.id, db)
-    if fixture_id not in active_matches:
-        raise HTTPException(status_code=404, detail="Active match session not found")
-
-    engine = active_matches[fixture_id]
+    engine = _get_or_restore_engine(fixture_id, db)
     _refresh_engine_players(engine, db)
     innings = engine.current_innings
     fixture = db.query(Fixture).get(fixture_id)
@@ -1453,6 +1526,7 @@ def simulate_innings_interactive(
 
     # Simulate rest of the innings
     engine.simulate_innings(innings)
+    _save_snapshot(fixture_id, engine, db)
 
     innings_just_changed = False
 
@@ -1507,10 +1581,7 @@ def get_available_bowlers(
 ):
     """Get bowlers available for next over"""
     verify_career_ownership(career_id, current_user.id, db)
-    if fixture_id not in active_matches:
-        raise HTTPException(status_code=404, detail="Active match session not found")
-
-    engine = active_matches[fixture_id]
+    engine = _get_or_restore_engine(fixture_id, db)
     _refresh_engine_players(engine, db)
     innings = engine.current_innings
 
@@ -1577,10 +1648,7 @@ def select_bowler_manual(
 ):
     """Manually select bowler for next over"""
     verify_career_ownership(career_id, current_user.id, db)
-    if fixture_id not in active_matches:
-        raise HTTPException(status_code=404, detail="Active match session not found")
-
-    engine = active_matches[fixture_id]
+    engine = _get_or_restore_engine(fixture_id, db)
     _refresh_engine_players(engine, db)
     innings = engine.current_innings
     fixture = db.query(Fixture).get(fixture_id)
@@ -1617,6 +1685,7 @@ def select_bowler_manual(
     if bowler.id not in innings.bowler_states:
         innings.bowler_states[bowler.id] = BowlerState(player_id=bowler.id)
 
+    _save_snapshot(fixture_id, engine, db)
     return _get_match_state_response(engine, fixture, db)
 
 
@@ -1629,10 +1698,7 @@ def get_available_batters(
 ):
     """Get batters available to come in next after a wicket."""
     verify_career_ownership(career_id, current_user.id, db)
-    if fixture_id not in active_matches:
-        raise HTTPException(status_code=404, detail="Active match session not found")
-
-    engine = active_matches[fixture_id]
+    engine = _get_or_restore_engine(fixture_id, db)
     _refresh_engine_players(engine, db)
     innings = engine.current_innings
 
@@ -1690,10 +1756,7 @@ def select_batter(
 ):
     """Select next batter after a wicket falls."""
     verify_career_ownership(career_id, current_user.id, db)
-    if fixture_id not in active_matches:
-        raise HTTPException(status_code=404, detail="Active match session not found")
-
-    engine = active_matches[fixture_id]
+    engine = _get_or_restore_engine(fixture_id, db)
     _refresh_engine_players(engine, db)
     innings = engine.current_innings
     fixture = db.query(Fixture).get(fixture_id)
@@ -1738,6 +1801,7 @@ def select_batter(
     # Advance next_batter_index
     innings.next_batter_index += 1
 
+    _save_snapshot(fixture_id, engine, db)
     return _get_match_state_response(engine, fixture, db)
 
 
@@ -1751,10 +1815,7 @@ def scout_player(
 ):
     """Get full DNA scouting report for an opponent batter during a match."""
     verify_career_ownership(career_id, current_user.id, db)
-    if fixture_id not in active_matches:
-        raise HTTPException(status_code=404, detail="Active match session not found")
-
-    engine = active_matches[fixture_id]
+    engine = _get_or_restore_engine(fixture_id, db)
     innings = engine.current_innings
     if not innings:
         raise HTTPException(status_code=400, detail="Match not initialized")
@@ -1783,10 +1844,7 @@ def get_live_scorecard(
 ):
     """Get live scorecard during an active match"""
     verify_career_ownership(career_id, current_user.id, db)
-    if fixture_id not in active_matches:
-        raise HTTPException(status_code=404, detail="Active match session not found")
-
-    engine = active_matches[fixture_id]
+    engine = _get_or_restore_engine(fixture_id, db)
     _refresh_engine_players(engine, db)
     fixture = db.query(Fixture).get(fixture_id)
 

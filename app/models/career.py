@@ -185,6 +185,9 @@ class Fixture(Base):
     winner_id: Mapped[Optional[int]] = mapped_column(ForeignKey("teams.id"), nullable=True)
     result_summary: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
+    # Match snapshot for save/resume (JSON-serialized MatchEngine state)
+    match_snapshot: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     def __repr__(self):
         return f"<Fixture #{self.match_number}: {self.team1.short_name if self.team1 else '?'} vs {self.team2.short_name if self.team2 else '?'}>"
 
