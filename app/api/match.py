@@ -1057,6 +1057,38 @@ def play_ball(
             winner_id, margin = _finalize_match_interactive(engine, fixture, db)
             _store_completed_match(fixture_id, engine, winner_id, margin)
             del active_matches[fixture_id]
+        elif innings == engine.innings1:
+            # Innings 1 complete — start innings 2 immediately
+            target = engine.innings1.total_runs + 1
+            team1_bats_first = engine.innings1.batting_team_id == fixture.team1_id
+            season = db.query(Season).get(fixture.season_id)
+            batting_team = fixture.team2 if team1_bats_first else fixture.team1
+            bowling_team = fixture.team1 if team1_bats_first else fixture.team2
+            batting_team_players = _get_playing_xi(batting_team, season.id, db)
+            bowling_team_players = _get_playing_xi(bowling_team, season.id, db)
+
+            match_pitch = getattr(engine, 'match_pitch', engine.innings1.pitch)
+            engine.innings2 = engine.setup_innings(
+                batting_team_players, bowling_team_players,
+                target=target, pitch=match_pitch, is_second_innings=True
+            )
+            engine.innings2.batting_team_id = fixture.team2_id if team1_bats_first else fixture.team1_id
+            engine.innings2.context.pitch_type = match_pitch.name
+            engine.current_innings = engine.innings2
+
+            user_team_id = getattr(engine, 'user_team_id', None)
+            is_user_batting_2nd = engine.innings2.batting_team_id == user_team_id if user_team_id else False
+
+            if not is_user_batting_2nd:
+                # User is bowling — must select bowler manually
+                engine.innings2.current_bowler_id = None
+            else:
+                # AI bowling — auto-select first bowler
+                bowler_2nd = engine.select_bowler(engine.innings2)
+                engine.innings2.current_bowler_id = bowler_2nd.id
+
+            innings_just_changed = True
+            _save_snapshot(fixture_id, engine, db)
 
     return BallResultResponse(
         outcome=_get_outcome_string(outcome),
