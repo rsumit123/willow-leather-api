@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import random
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict, Tuple, Union, TYPE_CHECKING, Any
 
 from app.engine.dna import (
@@ -1256,7 +1256,7 @@ class MatchEngineV2:
                 "last_bowler_id": innings.last_bowler_id,
                 "batting_order": list(innings.batting_order),
                 "next_batter_index": innings.next_batter_index,
-                "this_over": list(innings.this_over),
+                "this_over": [asdict(o) if hasattr(o, '__dataclass_fields__') else o for o in innings.this_over],
                 "batter_innings": batter_innings,
                 "bowler_spells": bowler_spells,
                 "batter_states": batter_states,
@@ -1324,7 +1324,7 @@ class MatchEngineV2:
                 last_bowler_id=data.get("last_bowler_id"),
                 batting_order=data.get("batting_order", []),
                 next_batter_index=data.get("next_batter_index", 2),
-                this_over=data.get("this_over", []),
+                this_over=[BallOutcome(**o) if isinstance(o, dict) else o for o in data.get("this_over", [])],
                 context=MatchContext(
                     pitch_type=data["context"]["pitch_type"],
                     is_pressure_cooker=data["context"]["is_pressure_cooker"],
