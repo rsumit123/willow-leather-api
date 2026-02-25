@@ -472,6 +472,7 @@ class TossResultResponse(BaseModel):
     toss_winner_name: str
     user_won_toss: bool
     user_team_name: str
+    pitch_info: Optional[PitchInfoResponse] = None
 
 
 class StartMatchRequest(BaseModel):

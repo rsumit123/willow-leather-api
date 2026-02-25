@@ -562,62 +562,61 @@ def _build_innings_scorecard(innings: InningsState, batting_team: Team, bowling_
 
 
 def _calculate_man_of_the_match(engine: MatchEngine, winner_id: int, db: Session) -> ManOfTheMatch:
-    """Calculate man of the match from winning team"""
-    # Collect all performances from winning team across both innings
-    player_impacts = {}  # player_id -> {batting_impact, bowling_impact, name, team_name, bat_summary, bowl_summary}
+    """Calculate man of the match from both teams"""
+    # Collect performances from ALL players across both innings
+    player_impacts = {}  # player_id -> {batting_impact, bowling_impact, name, team_name, ...}
 
-    winner_team = db.query(Team).get(winner_id)
+    # Build team_id -> team_name lookup
+    team_names = {}
+    for innings in [engine.innings1, engine.innings2]:
+        if not innings:
+            continue
+        if innings.batting_team_id:
+            team = db.query(Team).get(innings.batting_team_id)
+            if team:
+                team_names[innings.batting_team_id] = team.short_name
 
-    # Process both innings
+    def _get_team_name(team_id):
+        return team_names.get(team_id, "Unknown")
+
+    # Process both innings — collect batting AND bowling from both teams
     for innings in [engine.innings1, engine.innings2]:
         if not innings:
             continue
 
-        is_winner_batting = innings.batting_team_id == winner_id
+        batting_team_id = innings.batting_team_id
+        bowling_team_id = [tid for tid in team_names if tid != batting_team_id]
+        bowling_team_id = bowling_team_id[0] if bowling_team_id else None
 
-        if is_winner_batting:
-            # Count batting contributions from winning team
-            for player_id, bi in innings.batter_innings.items():
-                if player_id not in player_impacts:
-                    player_impacts[player_id] = {
-                        'batting_impact': 0,
-                        'bowling_impact': 0,
-                        'name': bi.player.name,
-                        'team_name': winner_team.short_name,
-                        'bat_runs': 0,
-                        'bat_balls': 0,
-                        'bowl_wickets': 0,
-                        'bowl_runs': 0
-                    }
+        # Batting contributions
+        for player_id, bi in innings.batter_innings.items():
+            if player_id not in player_impacts:
+                player_impacts[player_id] = {
+                    'batting_impact': 0, 'bowling_impact': 0,
+                    'name': bi.player.name, 'team_name': _get_team_name(batting_team_id),
+                    'bat_runs': 0, 'bat_balls': 0, 'bowl_wickets': 0, 'bowl_runs': 0
+                }
+            sr = bi.strike_rate if bi.balls > 0 else 100
+            batting_impact = bi.runs * (1 + (sr - 100) / 200)
+            player_impacts[player_id]['batting_impact'] += batting_impact
+            player_impacts[player_id]['bat_runs'] += bi.runs
+            player_impacts[player_id]['bat_balls'] += bi.balls
 
-                # Batting Impact = runs × (1 + (strike_rate - 100) / 200)
-                sr = bi.strike_rate if bi.balls > 0 else 100
-                batting_impact = bi.runs * (1 + (sr - 100) / 200)
-                player_impacts[player_id]['batting_impact'] += batting_impact
-                player_impacts[player_id]['bat_runs'] += bi.runs
-                player_impacts[player_id]['bat_balls'] += bi.balls
-        else:
-            # Count bowling contributions from winning team (they are bowling)
-            for player_id, spell in innings.bowler_spells.items():
-                if player_id not in player_impacts:
-                    player = spell.player
-                    player_impacts[player_id] = {
-                        'batting_impact': 0,
-                        'bowling_impact': 0,
-                        'name': player.name,
-                        'team_name': winner_team.short_name,
-                        'bat_runs': 0,
-                        'bat_balls': 0,
-                        'bowl_wickets': 0,
-                        'bowl_runs': 0
-                    }
-
-                # Bowling Impact = wickets × 25 × (1 + (6.0 - economy) / 6)
-                economy = spell.economy if (spell.overs * 6 + spell.balls) > 0 else 6.0
-                bowling_impact = spell.wickets * 25 * (1 + (6.0 - economy) / 6)
-                player_impacts[player_id]['bowling_impact'] += bowling_impact
-                player_impacts[player_id]['bowl_wickets'] += spell.wickets
-                player_impacts[player_id]['bowl_runs'] += spell.runs
+        # Bowling contributions
+        for player_id, spell in innings.bowler_spells.items():
+            if player_id not in player_impacts:
+                player_impacts[player_id] = {
+                    'batting_impact': 0, 'bowling_impact': 0,
+                    'name': spell.player.name, 'team_name': _get_team_name(bowling_team_id),
+                    'bat_runs': 0, 'bat_balls': 0, 'bowl_wickets': 0, 'bowl_runs': 0
+                }
+            economy = spell.economy if (spell.overs * 6 + spell.balls) > 0 else 6.0
+            # Clamped economy modifier: range [0.6, 1.5] instead of [0, 2.0]
+            economy_mod = max(0.6, min(1.5, 1 + (6.0 - economy) / 12))
+            bowling_impact = spell.wickets * 35 * economy_mod
+            player_impacts[player_id]['bowling_impact'] += bowling_impact
+            player_impacts[player_id]['bowl_wickets'] += spell.wickets
+            player_impacts[player_id]['bowl_runs'] += spell.runs
 
     # Find player with highest total impact
     best_player_id = None
@@ -630,13 +629,11 @@ def _calculate_man_of_the_match(engine: MatchEngine, winner_id: int, db: Session
             best_player_id = player_id
 
     if best_player_id is None:
-        # Fallback - shouldn't happen
+        winner_team = db.query(Team).get(winner_id)
         return ManOfTheMatch(
-            player_id=0,
-            player_name="Unknown",
-            team_name=winner_team.short_name,
-            performance_summary="N/A",
-            impact_score=0
+            player_id=0, player_name="Unknown",
+            team_name=winner_team.short_name if winner_team else "Unknown",
+            performance_summary="N/A", impact_score=0
         )
 
     data = player_impacts[best_player_id]
@@ -682,17 +679,23 @@ def do_toss(
     toss_winner = db.query(Team).get(toss_winner_id)
     user_won_toss = toss_winner_id == user_team.id
 
-    # Store toss result for later use in start_match
+    # Select pitch now so user can see it before choosing XI
+    pitch = random.choice(list(PITCHES.values()))
+    pitch_info = _get_pitch_info(pitch)
+
+    # Store toss result + pitch for later use in start_match
     pending_toss_results[fixture_id] = {
         "toss_winner_id": toss_winner_id,
-        "user_team_id": user_team.id
+        "user_team_id": user_team.id,
+        "pitch": pitch
     }
 
     return TossResultResponse(
         toss_winner_id=toss_winner_id,
         toss_winner_name=toss_winner.short_name,
         user_won_toss=user_won_toss,
-        user_team_name=user_team.short_name
+        user_team_name=user_team.short_name,
+        pitch_info=pitch_info
     )
 
 
@@ -758,8 +761,9 @@ def start_match(
 
     team1_bats_first = batting_first == team1
 
-    # Select pitch for this match
-    pitch = random.choice(list(PITCHES.values()))
+    # Use pitch from toss (selected earlier so user could see it), fallback to random
+    toss_data = pending_toss_results.get(fixture_id, {})
+    pitch = toss_data.get("pitch", random.choice(list(PITCHES.values())))
 
     engine.innings1 = engine.setup_innings(
         team1_players if team1_bats_first else team2_players,
