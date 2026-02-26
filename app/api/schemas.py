@@ -912,6 +912,56 @@ class ActiveBoostResponse(BaseModel):
     drill_type: str
 
 
+# ─── Training Plan Schemas (v2) ────────────────────────────────────
+
+class SetTrainingPlanRequest(BaseModel):
+    focus: str
+
+class BulkTrainingPlanEntry(BaseModel):
+    player_id: int
+    focus: str
+
+class BulkTrainingPlanRequest(BaseModel):
+    plans: List[BulkTrainingPlanEntry]
+
+class TrainingPlanPlayerResponse(BaseModel):
+    player_id: int
+    player_name: str
+    role: str
+    age: int
+    overall_rating: int
+    batting_skill: int
+    bowling_skill: int
+    batting_dna: Optional[dict] = None
+    bowling_dna: Optional[dict] = None
+    bowling_type: str
+    current_focus: Optional[str] = None
+    focus_display_name: Optional[str] = None
+    valid_focuses: List[str] = []
+
+class FocusOptionResponse(BaseModel):
+    focus: str
+    display_name: str
+    description: str
+    target_type: str
+    target_attributes: List[str]
+    best_for_roles: List[str]
+    icon: str
+
+class TrainingPlansResponse(BaseModel):
+    players: List[TrainingPlanPlayerResponse]
+    focus_options: List[FocusOptionResponse]
+
+class TrainingImprovementResponse(BaseModel):
+    player_id: int
+    player_name: str
+    focus: str
+    attribute: str
+    old_value: float
+    new_value: float
+    gain: float
+
+
 # ─── Progression Schemas ────────────────────────────────────────────
 
 class ObjectiveResponse(BaseModel):

@@ -66,6 +66,27 @@ class DrillType(enum.Enum):
     DEATH_BOWLING = "death_bowling"
 
 
+class TrainingFocus(enum.Enum):
+    # Batting focuses (BatterDNA)
+    VS_PACE = "vs_pace"
+    VS_SPIN = "vs_spin"
+    VS_BOUNCE = "vs_bounce"
+    SHOT_SELECTION = "shot_selection"      # vs_deception
+    POWER_HITTING = "power_hitting"        # BatterDNA.power
+    OFF_SIDE_PLAY = "off_side_play"        # off_side
+    LEG_SIDE_PLAY = "leg_side_play"        # leg_side
+    # Bowling focuses (PacerDNA / SpinnerDNA)
+    PACE_BOWLING = "pace_bowling"          # speed + swing
+    SWING_BOWLING = "swing_bowling"        # swing
+    BOUNCE_EXTRACTION = "bounce_extraction" # PacerDNA.bounce
+    SPIN_MASTERY = "spin_mastery"          # turn + flight
+    BOWLING_VARIATION = "bowling_variation" # variation
+    BOWLING_CONTROL = "bowling_control"    # control
+    # General (Player attributes)
+    FITNESS = "fitness"
+    FIELDING = "fielding"
+
+
 class Career(Base):
     """
     Represents a single career playthrough.
@@ -187,6 +208,9 @@ class Fixture(Base):
 
     # Match snapshot for save/resume (JSON-serialized MatchEngine state)
     match_snapshot: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Calendar date (set during calendar generation)
+    scheduled_date: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
 
     def __repr__(self):
         return f"<Fixture #{self.match_number}: {self.team1.short_name if self.team1 else '?'} vs {self.team2.short_name if self.team2 else '?'}>"
@@ -528,3 +552,46 @@ class SquadRegistration(Base):
 
     def __repr__(self):
         return f"<SquadRegistration team={self.team_id} player={self.player_id}>"
+
+
+class TrainingPlan(Base):
+    """
+    Persistent training focus for a single player.
+    Set once, stays until manually changed. On training days,
+    the focus area drives permanent DNA/skill improvements.
+    """
+    __tablename__ = "training_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    career_id: Mapped[int] = mapped_column(ForeignKey("careers.id"), index=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
+    focus: Mapped[TrainingFocus] = mapped_column(Enum(TrainingFocus))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    player: Mapped["Player"] = relationship("Player")
+
+    def __repr__(self):
+        return f"<TrainingPlan player={self.player_id} focus={self.focus.value}>"
+
+
+class TrainingLog(Base):
+    """
+    Record of each training day's improvements per player.
+    Used for notification details and training history.
+    """
+    __tablename__ = "training_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    career_id: Mapped[int] = mapped_column(ForeignKey("careers.id"), index=True)
+    game_day_id: Mapped[int] = mapped_column(ForeignKey("game_days.id"))
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+    focus: Mapped[str] = mapped_column(String(50))
+    attribute_improved: Mapped[str] = mapped_column(String(50))
+    old_value: Mapped[float] = mapped_column(Float)
+    new_value: Mapped[float] = mapped_column(Float)
+    improvement: Mapped[float] = mapped_column(Float)
+
+    def __repr__(self):
+        return f"<TrainingLog player={self.player_id} {self.attribute_improved} +{self.improvement}>"

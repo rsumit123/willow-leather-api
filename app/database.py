@@ -31,11 +31,15 @@ def _run_migrations():
         ("careers", "promoted_at_season", "INTEGER"),
         ("careers", "game_over", "BOOLEAN DEFAULT 0"),
         ("careers", "game_over_reason", "VARCHAR(50)"),
+        ("fixtures", "scheduled_date", "VARCHAR(10)"),
     ]
     inspector = inspect(engine)
     with engine.connect() as conn:
         for table, column, col_type in migrations:
-            existing = [c["name"] for c in inspector.get_columns(table)]
+            try:
+                existing = [c["name"] for c in inspector.get_columns(table)]
+            except Exception:
+                continue  # Table doesn't exist yet
             if column not in existing:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
         conn.commit()

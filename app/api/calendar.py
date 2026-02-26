@@ -1,11 +1,16 @@
 """
 Calendar API — Day-by-day game progression.
 """
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.career import Career, Season, GameDay, DayType, Fixture
+from app.models.career import (
+    Career, Season, GameDay, DayType, Fixture, FixtureStatus,
+    TrainingPlan, Notification, NotificationType,
+)
+from app.models.player import Player
 from app.models.user import User
 from app.auth.utils import get_current_user
 from app.api.schemas import (
@@ -30,6 +35,35 @@ def _enrich_game_day(day: GameDay, db: Session, user_team_id: int) -> GameDayRes
     if day.fixture_id:
         fixture = db.query(Fixture).get(day.fixture_id)
     return GameDayResponse.from_model(day, fixture=fixture, user_team_id=user_team_id)
+
+
+def _get_ai_fixtures(db: Session, season_id: int, date_str: str, user_team_id: int) -> list:
+    """Get AI vs AI fixtures scheduled on a given date."""
+    fixtures = db.query(Fixture).filter(
+        Fixture.season_id == season_id,
+        Fixture.scheduled_date == date_str,
+        Fixture.team1_id != user_team_id,
+        Fixture.team2_id != user_team_id,
+    ).all()
+
+    result = []
+    for f in fixtures:
+        entry = {
+            "id": f.id,
+            "match_number": f.match_number,
+            "team1_name": f.team1.short_name if f.team1 else "TBD",
+            "team2_name": f.team2.short_name if f.team2 else "TBD",
+            "status": f.status.value,
+        }
+        if f.status == FixtureStatus.COMPLETED and f.winner_id:
+            if f.winner_id == f.team1_id:
+                entry["winner_name"] = f.team1.short_name if f.team1 else "?"
+            elif f.winner_id == f.team2_id:
+                entry["winner_name"] = f.team2.short_name if f.team2 else "?"
+            entry["result_summary"] = f.result_summary
+        result.append(entry)
+
+    return result
 
 
 @router.get("/{career_id}/current")
@@ -60,11 +94,20 @@ def get_current_day(
 
     user_team_id = career.user_team_id
 
-    return CalendarCurrentResponse(
+    # Get AI fixtures for today
+    ai_fixtures_today = _get_ai_fixtures(
+        db, current_day.season_id, current_day.date, user_team_id
+    )
+
+    response = CalendarCurrentResponse(
         current_day=_enrich_game_day(current_day, db, user_team_id),
         upcoming=[_enrich_game_day(d, db, user_team_id) for d in upcoming],
         has_calendar=True,
     )
+    # Attach AI fixtures as extra field
+    response_dict = response.model_dump()
+    response_dict["ai_fixtures_today"] = ai_fixtures_today
+    return response_dict
 
 
 @router.post("/{career_id}/advance")
@@ -85,14 +128,12 @@ def advance_day(
         raise HTTPException(status_code=400, detail="No calendar set up")
 
     if skip_to_event:
-        # Skip to next match_day or training day
         next_day = db.query(GameDay).filter(
             GameDay.career_id == career.id,
             GameDay.date > current_day.date,
             GameDay.day_type.in_([DayType.MATCH_DAY, DayType.TRAINING]),
         ).order_by(GameDay.date).first()
     else:
-        # Just advance one day
         next_day = db.query(GameDay).filter(
             GameDay.career_id == career.id,
             GameDay.date > current_day.date,
@@ -103,11 +144,73 @@ def advance_day(
 
     current_day.is_current = False
     next_day.is_current = True
+
+    # ─── Auto-training on training days ─────────────────────────────
+    training_results = None
+    untrained_warning = None
+
+    if next_day.day_type == DayType.TRAINING:
+        from app.engine.training_engine_v2 import process_training_day
+
+        results = process_training_day(db, career.id, next_day.id)
+
+        if results:
+            # Group by player
+            trained_players = set(r["player_name"] for r in results)
+            details = []
+            for r in results:
+                details.append(f"{r['player_name']}: {r['attribute']} +{r['gain']}")
+
+            body = f"{len(trained_players)} player(s) trained.\n" + "\n".join(details[:10])
+            if len(details) > 10:
+                body += f"\n...and {len(details) - 10} more improvements"
+
+            notif = Notification(
+                career_id=career.id,
+                type=NotificationType.TRAINING,
+                title="Training Day Complete",
+                body=body,
+                icon="dumbbell",
+                action_url="/training",
+                metadata_json=json.dumps({"improvements": results[:20]}),
+            )
+            db.add(notif)
+            training_results = results
+
+        # Check for players without training plans
+        team_players = db.query(Player).filter_by(team_id=career.user_team_id).all()
+        plans = db.query(TrainingPlan).filter_by(career_id=career.id).all()
+        plan_player_ids = {p.player_id for p in plans}
+        untrained = [p for p in team_players if p.id not in plan_player_ids]
+
+        if untrained:
+            untrained_warning = {
+                "count": len(untrained),
+                "player_names": [p.name for p in untrained[:5]],
+            }
+            notif = Notification(
+                career_id=career.id,
+                type=NotificationType.TRAINING,
+                title=f"{len(untrained)} player(s) have no training plan!",
+                body="Set training plans for all players so they improve on training days.",
+                icon="alert-triangle",
+                action_url="/training",
+            )
+            db.add(notif)
+
     db.commit()
+
+    # Get AI fixtures for the new day
+    ai_fixtures = _get_ai_fixtures(
+        db, next_day.season_id, next_day.date, career.user_team_id
+    )
 
     return {
         "day": _enrich_game_day(next_day, db, career.user_team_id),
         "season_ended": False,
+        "training_results": training_results,
+        "untrained_warning": untrained_warning,
+        "ai_fixtures_today": ai_fixtures,
     }
 
 

@@ -51,13 +51,14 @@ def generate_season_calendar(
     # 2. Assign dates to fixtures
     fixture_dates = _assign_fixture_dates(fixtures, start_date, end_date, tier_config)
 
-    # 3. Build user-team match date set
+    # 3. Build user-team match date set and persist scheduled_date on all fixtures
     user_team_id = career.user_team_id
     user_match_dates = set()
     fixture_date_map = {}  # date_str -> fixture_id (for user's team)
 
     for fixture, d in fixture_dates:
         date_str = d.isoformat()
+        fixture.scheduled_date = date_str  # Persist date on fixture for AI activity display
         if fixture.team1_id == user_team_id or fixture.team2_id == user_team_id:
             user_match_dates.add(d)
             fixture_date_map[date_str] = fixture.id
