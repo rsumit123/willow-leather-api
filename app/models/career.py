@@ -212,6 +212,9 @@ class Fixture(Base):
     # Calendar date (set during calendar generation)
     scheduled_date: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
 
+    # Pitch assigned to this fixture (set during calendar generation)
+    pitch_name: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+
     def __repr__(self):
         return f"<Fixture #{self.match_number}: {self.team1.short_name if self.team1 else '?'} vs {self.team2.short_name if self.team2 else '?'}>"
 

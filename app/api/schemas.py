@@ -821,9 +821,23 @@ class GameDayResponse(BaseModel):
     match_number: Optional[int] = None
     is_user_home: Optional[bool] = None
     fixture_status: Optional[str] = None  # "scheduled" | "in_progress" | "completed"
+    pitch_name: Optional[str] = None
+    pitch_display_name: Optional[str] = None
 
     @classmethod
     def from_model(cls, model, fixture=None, user_team_id=None):
+        PITCH_DISPLAY_NAMES = {
+            "green_seamer": "Green Seamer",
+            "dust_bowl": "Dust Bowl",
+            "flat_deck": "Flat Deck",
+            "bouncy_track": "Bouncy Track",
+            "slow_turner": "Slow Turner",
+            "balanced": "Balanced",
+            "muddy": "Muddy",
+            "grassless": "Grassless",
+            "uneven_bounce": "Uneven Bounce",
+            "village_green": "Village Green",
+        }
         data = dict(
             id=model.id,
             date=model.date,
@@ -845,6 +859,11 @@ class GameDayResponse(BaseModel):
             data["venue"] = fixture.venue
             data["match_number"] = fixture.match_number
             data["fixture_status"] = fixture.status.value if hasattr(fixture.status, 'value') else str(fixture.status)
+            if fixture.pitch_name:
+                data["pitch_name"] = fixture.pitch_name
+                data["pitch_display_name"] = PITCH_DISPLAY_NAMES.get(
+                    fixture.pitch_name, fixture.pitch_name.replace("_", " ").title()
+                )
         return cls(**data)
 
 

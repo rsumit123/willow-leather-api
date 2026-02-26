@@ -32,6 +32,7 @@ def _run_migrations():
         ("careers", "game_over", "BOOLEAN DEFAULT 0"),
         ("careers", "game_over_reason", "VARCHAR(50)"),
         ("fixtures", "scheduled_date", "VARCHAR(10)"),
+        ("fixtures", "pitch_name", "VARCHAR(30)"),
     ]
     inspector = inspect(engine)
     with engine.connect() as conn:

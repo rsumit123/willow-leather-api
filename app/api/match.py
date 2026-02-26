@@ -679,8 +679,11 @@ def do_toss(
     toss_winner = db.query(Team).get(toss_winner_id)
     user_won_toss = toss_winner_id == user_team.id
 
-    # Select pitch now so user can see it before choosing XI
-    pitch = random.choice(list(PITCHES.values()))
+    # Use pre-assigned pitch from fixture (set during calendar generation), fallback to random
+    if fixture.pitch_name and fixture.pitch_name in PITCHES:
+        pitch = PITCHES[fixture.pitch_name]
+    else:
+        pitch = random.choice(list(PITCHES.values()))
     pitch_info = _get_pitch_info(pitch)
 
     # Store toss result + pitch for later use in start_match

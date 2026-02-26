@@ -5,6 +5,7 @@ Each season's fixtures are spread across the tier's calendar months.
 Between user-team match days, training/rest/travel days are inserted.
 """
 import calendar as cal
+import random
 from datetime import date, timedelta
 from typing import List, Tuple
 
@@ -56,9 +57,12 @@ def generate_season_calendar(
     user_match_dates = set()
     fixture_date_map = {}  # date_str -> fixture_id (for user's team)
 
+    tier_pitches = tier_config.get("pitches", ["balanced"])
     for fixture, d in fixture_dates:
         date_str = d.isoformat()
         fixture.scheduled_date = date_str  # Persist date on fixture for AI activity display
+        if not fixture.pitch_name:
+            fixture.pitch_name = random.choice(tier_pitches)
         if fixture.team1_id == user_team_id or fixture.team2_id == user_team_id:
             user_match_dates.add(d)
             fixture_date_map[date_str] = fixture.id
