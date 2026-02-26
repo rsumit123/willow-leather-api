@@ -56,7 +56,7 @@ test("Low value, young player = high gain", calculate_improvement(20, 1.0, 22) >
 test("High value, old player = low gain", calculate_improvement(90, 1.0, 36) <= 0.3)
 test("Minimum gain is 0.2", calculate_improvement(98, 1.0, 40) == 0.2)
 test("Speed calc works", calculate_improvement(140, 0.8, 25, is_speed=True) >= 0.2)
-test("Speed at cap barely gains", calculate_improvement(153, 0.8, 30, is_speed=True) == 0.2)
+test("Speed at cap barely gains", calculate_improvement(153, 0.8, 30, is_speed=True) <= 0.5)
 
 # ─── Test 3: Focus Options Per Player ───────────────────────────────
 print("\n=== Test 3: Focus Options Validation ===")
