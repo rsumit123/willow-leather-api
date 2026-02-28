@@ -160,11 +160,17 @@ def advance_day(
                     simulated += 1
                 except ValueError:
                     break
-            # Transition to playoffs if league is complete
-            if engine.is_league_complete():
-                season.phase = SeasonPhase.PLAYOFFS
-                career.status = CareerStatus.PLAYOFFS
-                engine.generate_playoffs()
+            # Transition to playoffs if league is complete and playoffs not yet generated
+            if engine.is_league_complete() and season.phase == SeasonPhase.LEAGUE_STAGE:
+                # Check no playoff fixtures exist yet
+                existing_playoffs = db.query(Fixture).filter(
+                    Fixture.season_id == season.id,
+                    Fixture.fixture_type != FixtureType.LEAGUE,
+                ).count()
+                if existing_playoffs == 0:
+                    season.phase = SeasonPhase.PLAYOFFS
+                    career.status = CareerStatus.PLAYOFFS
+                    engine.generate_playoffs()
             db.commit()
         return {
             "message": "Season calendar complete",
