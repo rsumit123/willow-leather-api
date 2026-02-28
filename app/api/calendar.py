@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.career import (
-    Career, Season, GameDay, DayType, Fixture, FixtureStatus,
+    Career, Season, GameDay, DayType, Fixture, FixtureStatus, FixtureType,
     TrainingPlan, Notification, NotificationType,
+    SeasonPhase, CareerStatus,
 )
 from app.models.player import Player
 from app.models.user import User
@@ -140,7 +141,36 @@ def advance_day(
         ).order_by(GameDay.date).first()
 
     if not next_day:
-        return {"message": "Season calendar complete", "season_ended": True}
+        # Auto-simulate remaining AI league fixtures before ending the season
+        from app.engine.season_engine import SeasonEngine
+
+        season = db.query(Season).filter_by(
+            career_id=career.id,
+            season_number=career.current_season_number,
+        ).first()
+        simulated = 0
+        if season:
+            engine = SeasonEngine(db, season)
+            while True:
+                fixture = engine.get_next_fixture()
+                if not fixture or fixture.fixture_type != FixtureType.LEAGUE:
+                    break
+                try:
+                    engine.simulate_match(fixture)
+                    simulated += 1
+                except ValueError:
+                    break
+            # Transition to playoffs if league is complete
+            if engine.is_league_complete():
+                season.phase = SeasonPhase.PLAYOFFS
+                career.status = CareerStatus.PLAYOFFS
+                engine.generate_playoffs()
+            db.commit()
+        return {
+            "message": "Season calendar complete",
+            "season_ended": True,
+            "remaining_simulated": simulated,
+        }
 
     current_day.is_current = False
     next_day.is_current = True
